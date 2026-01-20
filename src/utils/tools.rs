@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const AZCOPY_DOWNLOAD_URL: &str = "https://aka.ms/downloadazcopy-v10-windows";
+const ETL2PCAPNG_DOWNLOAD_URL: &str = "https://github.com/microsoft/etl2pcapng/releases/download/v1.11.0/etl2pcapng.exe";
 
 /// Get the application data directory for storing tools
 pub fn get_app_data_dir() -> Result<PathBuf> {
@@ -259,4 +260,75 @@ pub async fn ensure_azcopy() -> Result<PathBuf> {
     
     println!("{}", "azcopy not found on system.".yellow());
     download_azcopy().await
+}
+
+/// Find etl2pcapng executable - checks PATH first, then app data directory
+pub fn find_etl2pcapng() -> Option<PathBuf> {
+    // Check if etl2pcapng is in PATH or common locations
+    if let Some(path) = find_executable("etl2pcapng", &[
+        r"C:\Program Files\etl2pcapng\etl2pcapng.exe",
+        r"C:\Program Files (x86)\etl2pcapng\etl2pcapng.exe",
+    ]) {
+        return Some(path);
+    }
+    
+    // Check app data directory
+    if let Ok(app_dir) = get_app_data_dir() {
+        let etl2pcapng_path = app_dir.join("etl2pcapng").join("etl2pcapng.exe");
+        if etl2pcapng_path.exists() {
+            return Some(etl2pcapng_path);
+        }
+    }
+    
+    None
+}
+
+/// Download etl2pcapng to app data directory
+pub async fn download_etl2pcapng() -> Result<PathBuf> {
+    let app_dir = get_app_data_dir()?;
+    let etl2pcapng_dir = app_dir.join("etl2pcapng");
+    let etl2pcapng_exe = etl2pcapng_dir.join("etl2pcapng.exe");
+    
+    if etl2pcapng_exe.exists() {
+        return Ok(etl2pcapng_exe);
+    }
+    
+    println!("{}", "Downloading etl2pcapng...".yellow());
+    
+    // Create directory
+    if !etl2pcapng_dir.exists() {
+        fs::create_dir_all(&etl2pcapng_dir)?;
+    }
+    
+    // Download the exe directly (it's a single file, not a zip)
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
+    
+    let response = client.get(ETL2PCAPNG_DOWNLOAD_URL)
+        .send()
+        .await
+        .context("Failed to download etl2pcapng")?;
+    
+    let bytes = response.bytes().await?;
+    fs::write(&etl2pcapng_exe, &bytes).context("Failed to save etl2pcapng")?;
+    
+    // Verify installation
+    let output = Command::new(&etl2pcapng_exe).output();
+    if output.is_ok() {
+        println!("{} etl2pcapng", "Installed:".green());
+    }
+    
+    Ok(etl2pcapng_exe)
+}
+
+/// Ensure etl2pcapng is available, downloading if necessary
+pub async fn ensure_etl2pcapng() -> Result<PathBuf> {
+    if let Some(path) = find_etl2pcapng() {
+        println!("{} etl2pcapng ({})", "Found:".green(), path.display());
+        return Ok(path);
+    }
+    
+    println!("{}", "etl2pcapng not found on system.".yellow());
+    download_etl2pcapng().await
 }

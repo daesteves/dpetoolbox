@@ -61,6 +61,16 @@ enum Commands {
         #[arg(short, long, default_value = "false")]
         delete_empty: bool,
     },
+    /// Convert ETL files to PCAP format (uses etl2pcapng, auto-downloads if needed)
+    Convert {
+        /// Directory containing ETL files to convert
+        #[arg(short, long)]
+        input: String,
+
+        /// Output directory for PCAP files (default: same as input)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 fn show_banner() {
@@ -81,6 +91,7 @@ const MENU_OPTIONS: &[&str] = &[
     "Download files from URL list",
     "Merge PCAP files by IP",
     "Filter PCAP files",
+    "Convert ETL to PCAP",
     "Exit",
 ];
 
@@ -117,6 +128,12 @@ async fn interactive_mode() -> Result<()> {
                 }
             }
             3 => {
+                // Convert ETL to PCAP
+                if let Err(e) = interactive_convert().await {
+                    println!("{} {}", "Error:".red().bold(), e);
+                }
+            }
+            4 => {
                 // Exit
                 println!("{}", "Goodbye!".cyan());
                 break;
@@ -239,6 +256,33 @@ fn interactive_filter() -> Result<()> {
     commands::filter::run(&input, output_opt, &filter, delete_empty)
 }
 
+/// Interactive convert prompts
+async fn interactive_convert() -> Result<()> {
+    let theme = ColorfulTheme::default();
+
+    // Prompt for source directory
+    let input: String = Input::with_theme(&theme)
+        .with_prompt("Directory containing ETL files")
+        .interact_text()?;
+
+    // Validate directory exists
+    if !std::path::Path::new(&input).exists() {
+        anyhow::bail!("Directory not found: {}", input);
+    }
+
+    // Prompt for output directory
+    let output: String = Input::with_theme(&theme)
+        .with_prompt("Output directory for PCAP files")
+        .default(input.clone())
+        .interact_text()?;
+
+    println!();
+
+    // Run the convert
+    let output_opt = if output == input { None } else { Some(output.as_str()) };
+    commands::convert::run(&input, output_opt).await
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     show_banner();
@@ -254,6 +298,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Filter { input, output, filter, delete_empty }) => {
             commands::filter::run(&input, output.as_deref(), &filter, delete_empty)?;
+        }
+        Some(Commands::Convert { input, output }) => {
+            commands::convert::run(&input, output.as_deref()).await?;
         }
         None => {
             // No subcommand provided - run interactive mode
