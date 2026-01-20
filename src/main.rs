@@ -2,9 +2,11 @@ mod commands;
 mod utils;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 use colored::Colorize;
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
+use std::io;
 
 #[derive(Parser)]
 #[command(name = "dpetoolbox")]
@@ -15,17 +17,29 @@ use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    /// Generate shell completions
+    #[arg(long, value_name = "SHELL")]
+    completions: Option<Shell>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
     /// Download files from a list of URLs (uses azcopy for multi-threaded downloads)
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox download -f urls.txt
+    dpetoolbox download -f urls.txt -o ./downloads -t 8
+    dpetoolbox download --clipboard")]
     Download {
         /// Path to the TXT file containing URLs (one per line)
-        #[arg(short, long)]
-        file: String,
+        #[arg(short, long, required_unless_present = "clipboard")]
+        file: Option<String>,
 
-        /// Output directory for downloaded files (default: same as input file directory)
+        /// Read URLs from clipboard instead of file
+        #[arg(long)]
+        clipboard: bool,
+
+        /// Output directory for downloaded files (default: parent/<filename>)
         #[arg(short, long)]
         output: Option<String>,
 
@@ -34,6 +48,9 @@ enum Commands {
         threads: u32,
     },
     /// Merge PCAP files by IP address (requires Wireshark/mergecap)
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox merge -i ./pcaps
+    dpetoolbox merge -i ./pcaps -o ./merged")]
     Merge {
         /// Directory containing PCAP files to merge
         #[arg(short, long)]
@@ -44,6 +61,10 @@ enum Commands {
         output: Option<String>,
     },
     /// Filter PCAP files using Wireshark display filter (requires Wireshark/tshark)
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox filter -i ./pcaps -F \"ip.src == 10.0.0.1\"
+    dpetoolbox filter -i ./pcaps -F \"tcp.port == 443\" -d
+    dpetoolbox filter -i ./pcaps -o ./filtered -F \"http\"")]
     Filter {
         /// Directory containing PCAP files to filter
         #[arg(short, long)]
@@ -62,6 +83,9 @@ enum Commands {
         delete_empty: bool,
     },
     /// Convert ETL files to PCAP format (uses etl2pcapng, auto-downloads if needed)
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox convert -i ./etls
+    dpetoolbox convert -i ./etls -o ./pcaps")]
     Convert {
         /// Directory containing ETL files to convert
         #[arg(short, long)]
@@ -72,6 +96,10 @@ enum Commands {
         output: Option<String>,
     },
     /// TCP ping - test TCP connectivity to a host:port
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox tcpping -t google.com -p 443
+    dpetoolbox tcpping -t 10.0.0.1 -p 22 --timeout 5000
+    dpetoolbox tcpping -t myserver.local -p 80 --interval 2")]
     Tcpping {
         /// Target hostname or IP address
         #[arg(short, long)]
@@ -346,13 +374,45 @@ fn interactive_tcpping() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    show_banner();
-
     let cli = Cli::parse();
 
+    // Handle shell completion generation (no banner)
+    if let Some(shell) = cli.completions {
+        let mut cmd = Cli::command();
+        generate(shell, &mut cmd, "dpetoolbox", &mut io::stdout());
+        return Ok(());
+    }
+
+    show_banner();
+
     match cli.command {
-        Some(Commands::Download { file, output, threads }) => {
-            commands::download::run(&file, output.as_deref(), threads).await?;
+        Some(Commands::Download { file, clipboard, output, threads }) => {
+            if clipboard {
+                // Read URLs from clipboard
+                let mut clip = arboard::Clipboard::new()
+                    .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
+                let text = clip.get_text()
+                    .map_err(|e| anyhow::anyhow!("Failed to read clipboard: {}", e))?;
+                
+                // Create temp file with clipboard content
+                let temp_dir = std::env::temp_dir();
+                let temp_file = temp_dir.join("dpetoolbox_clipboard_urls.txt");
+                std::fs::write(&temp_file, &text)?;
+                
+                let result = commands::download::run(
+                    temp_file.to_str().unwrap(),
+                    output.as_deref(),
+                    threads
+                ).await;
+                
+                // Cleanup temp file
+                std::fs::remove_file(&temp_file).ok();
+                result?;
+            } else if let Some(file) = file {
+                commands::download::run(&file, output.as_deref(), threads).await?;
+            } else {
+                anyhow::bail!("Either --file or --clipboard must be provided");
+            }
         }
         Some(Commands::Merge { input, output }) => {
             commands::merge::run(&input, output.as_deref())?;
