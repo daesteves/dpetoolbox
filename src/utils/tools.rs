@@ -67,6 +67,46 @@ pub fn ensure_mergecap() -> Result<PathBuf> {
     )
 }
 
+/// Find tshark executable (part of Wireshark)
+pub fn find_tshark() -> Option<PathBuf> {
+    find_executable("tshark", &[
+        r"C:\Program Files\Wireshark\tshark.exe",
+        r"C:\Program Files (x86)\Wireshark\tshark.exe",
+    ])
+}
+
+/// Ensure tshark is available
+pub fn ensure_tshark() -> Result<PathBuf> {
+    if let Some(path) = find_tshark() {
+        println!("{} tshark ({})", "Found:".green(), path.display());
+        return Ok(path);
+    }
+    
+    anyhow::bail!(
+        "tshark not found. Please install Wireshark from https://www.wireshark.org/download.html"
+    )
+}
+
+/// Find capinfos executable (part of Wireshark)
+pub fn find_capinfos() -> Option<PathBuf> {
+    find_executable("capinfos", &[
+        r"C:\Program Files\Wireshark\capinfos.exe",
+        r"C:\Program Files (x86)\Wireshark\capinfos.exe",
+    ])
+}
+
+/// Ensure capinfos is available
+pub fn ensure_capinfos() -> Result<PathBuf> {
+    if let Some(path) = find_capinfos() {
+        println!("{} capinfos ({})", "Found:".green(), path.display());
+        return Ok(path);
+    }
+    
+    anyhow::bail!(
+        "capinfos not found. Please install Wireshark from https://www.wireshark.org/download.html"
+    )
+}
+
 /// Find azcopy executable - checks PATH first, then app data directory
 pub fn find_azcopy() -> Option<PathBuf> {
     // Check if azcopy is in PATH

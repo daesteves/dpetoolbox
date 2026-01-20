@@ -4,7 +4,7 @@ mod utils;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use dialoguer::{Input, Select, theme::ColorfulTheme};
+use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 
 #[derive(Parser)]
 #[command(name = "dpetoolbox")]
@@ -43,6 +43,24 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Filter PCAP files using Wireshark display filter (requires Wireshark/tshark)
+    Filter {
+        /// Directory containing PCAP files to filter
+        #[arg(short, long)]
+        input: String,
+
+        /// Output directory for filtered files (default: same as input)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Wireshark display filter (e.g., 'ip.src == 1.2.3.4')
+        #[arg(short = 'F', long)]
+        filter: String,
+
+        /// Delete empty files (files with 0 matching packets)
+        #[arg(short, long, default_value = "false")]
+        delete_empty: bool,
+    },
 }
 
 fn show_banner() {
@@ -62,6 +80,7 @@ fn show_banner() {
 const MENU_OPTIONS: &[&str] = &[
     "Download files from URL list",
     "Merge PCAP files by IP",
+    "Filter PCAP files",
     "Exit",
 ];
 
@@ -92,6 +111,12 @@ async fn interactive_mode() -> Result<()> {
                 }
             }
             2 => {
+                // Filter PCAP files
+                if let Err(e) = interactive_filter() {
+                    println!("{} {}", "Error:".red().bold(), e);
+                }
+            }
+            3 => {
                 // Exit
                 println!("{}", "Goodbye!".cyan());
                 break;
@@ -172,6 +197,48 @@ fn interactive_merge() -> Result<()> {
     commands::merge::run(&input, output_opt)
 }
 
+/// Interactive filter prompts
+fn interactive_filter() -> Result<()> {
+    let theme = ColorfulTheme::default();
+
+    // Prompt for source directory
+    let input: String = Input::with_theme(&theme)
+        .with_prompt("Directory containing PCAP files")
+        .interact_text()?;
+
+    // Validate directory exists
+    if !std::path::Path::new(&input).exists() {
+        anyhow::bail!("Directory not found: {}", input);
+    }
+
+    // Prompt for output directory
+    let output: String = Input::with_theme(&theme)
+        .with_prompt("Output directory for filtered files")
+        .default(input.clone())
+        .interact_text()?;
+
+    // Prompt for filter
+    let filter: String = Input::with_theme(&theme)
+        .with_prompt("Wireshark display filter (e.g., 'ip.src == 1.2.3.4')")
+        .interact_text()?;
+
+    if filter.is_empty() {
+        anyhow::bail!("Filter is required");
+    }
+
+    // Prompt for delete empty files
+    let delete_empty = Confirm::with_theme(&theme)
+        .with_prompt("Delete empty filtered files (0 packets)?")
+        .default(false)
+        .interact()?;
+
+    println!();
+
+    // Run the filter
+    let output_opt = if output == input { None } else { Some(output.as_str()) };
+    commands::filter::run(&input, output_opt, &filter, delete_empty)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     show_banner();
@@ -184,6 +251,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Merge { input, output }) => {
             commands::merge::run(&input, output.as_deref())?;
+        }
+        Some(Commands::Filter { input, output, filter, delete_empty }) => {
+            commands::filter::run(&input, output.as_deref(), &filter, delete_empty)?;
         }
         None => {
             // No subcommand provided - run interactive mode
