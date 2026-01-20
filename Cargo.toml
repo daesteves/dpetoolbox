@@ -16,6 +16,7 @@ reqwest = { version = "0.12", features = ["stream"] }
 futures = "0.3"
 dirs = "5"
 zip = "2"
+dialoguer = "0.11"
 
 [[bin]]
 name = "dpetoolbox"
