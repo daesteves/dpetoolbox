@@ -71,6 +71,24 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// TCP ping - test TCP connectivity to a host:port
+    Tcpping {
+        /// Target hostname or IP address
+        #[arg(short, long)]
+        target: String,
+
+        /// Target port
+        #[arg(short, long)]
+        port: u16,
+
+        /// Connection timeout in milliseconds (default: 2000)
+        #[arg(long, default_value = "2000")]
+        timeout: u64,
+
+        /// Interval between pings in seconds (default: 1)
+        #[arg(long, default_value = "1")]
+        interval: u64,
+    },
 }
 
 fn show_banner() {
@@ -92,6 +110,7 @@ const MENU_OPTIONS: &[&str] = &[
     "Merge PCAP files by IP",
     "Filter PCAP files",
     "Convert ETL to PCAP",
+    "TCP Ping",
     "Exit",
 ];
 
@@ -134,6 +153,12 @@ async fn interactive_mode() -> Result<()> {
                 }
             }
             4 => {
+                // TCP Ping
+                if let Err(e) = interactive_tcpping() {
+                    println!("{} {}", "Error:".red().bold(), e);
+                }
+            }
+            5 => {
                 // Exit
                 println!("{}", "Goodbye!".cyan());
                 break;
@@ -283,6 +308,42 @@ async fn interactive_convert() -> Result<()> {
     commands::convert::run(&input, output_opt).await
 }
 
+/// Interactive tcpping prompts
+fn interactive_tcpping() -> Result<()> {
+    let theme = ColorfulTheme::default();
+
+    // Prompt for target
+    let target: String = Input::with_theme(&theme)
+        .with_prompt("Target hostname or IP")
+        .interact_text()?;
+
+    if target.is_empty() {
+        anyhow::bail!("Target is required");
+    }
+
+    // Prompt for port
+    let port: u16 = Input::with_theme(&theme)
+        .with_prompt("Port")
+        .interact_text()?;
+
+    // Prompt for timeout
+    let timeout: u64 = Input::with_theme(&theme)
+        .with_prompt("Timeout (ms)")
+        .default(2000)
+        .interact_text()?;
+
+    // Prompt for interval
+    let interval: u64 = Input::with_theme(&theme)
+        .with_prompt("Interval (seconds)")
+        .default(1)
+        .interact_text()?;
+
+    println!();
+
+    // Run tcpping
+    commands::tcpping::run(&target, port, timeout, interval)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     show_banner();
@@ -301,6 +362,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Convert { input, output }) => {
             commands::convert::run(&input, output.as_deref()).await?;
+        }
+        Some(Commands::Tcpping { target, port, timeout, interval }) => {
+            commands::tcpping::run(&target, port, timeout, interval)?;
         }
         None => {
             // No subcommand provided - run interactive mode
