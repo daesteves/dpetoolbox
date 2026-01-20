@@ -33,6 +33,16 @@ enum Commands {
         #[arg(short, long, default_value = "4")]
         threads: u32,
     },
+    /// Merge PCAP files by IP address (requires Wireshark/mergecap)
+    Merge {
+        /// Directory containing PCAP files to merge
+        #[arg(short, long)]
+        input: String,
+
+        /// Output directory for merged files (default: same as input)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 fn show_banner() {
@@ -51,6 +61,7 @@ fn show_banner() {
 /// Interactive menu options
 const MENU_OPTIONS: &[&str] = &[
     "Download files from URL list",
+    "Merge PCAP files by IP",
     "Exit",
 ];
 
@@ -75,6 +86,12 @@ async fn interactive_mode() -> Result<()> {
                 }
             }
             1 => {
+                // Merge PCAP files
+                if let Err(e) = interactive_merge() {
+                    println!("{} {}", "Error:".red().bold(), e);
+                }
+            }
+            2 => {
                 // Exit
                 println!("{}", "Goodbye!".cyan());
                 break;
@@ -128,6 +145,33 @@ async fn interactive_download() -> Result<()> {
     commands::download::run(&file, output_opt, threads).await
 }
 
+/// Interactive merge prompts
+fn interactive_merge() -> Result<()> {
+    let theme = ColorfulTheme::default();
+
+    // Prompt for source directory
+    let input: String = Input::with_theme(&theme)
+        .with_prompt("Directory containing PCAP files")
+        .interact_text()?;
+
+    // Validate directory exists
+    if !std::path::Path::new(&input).exists() {
+        anyhow::bail!("Directory not found: {}", input);
+    }
+
+    // Prompt for output directory
+    let output: String = Input::with_theme(&theme)
+        .with_prompt("Output directory for merged files")
+        .default(input.clone())
+        .interact_text()?;
+
+    println!();
+
+    // Run the merge
+    let output_opt = if output == input { None } else { Some(output.as_str()) };
+    commands::merge::run(&input, output_opt)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     show_banner();
@@ -137,6 +181,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Download { file, output, threads }) => {
             commands::download::run(&file, output.as_deref(), threads).await?;
+        }
+        Some(Commands::Merge { input, output }) => {
+            commands::merge::run(&input, output.as_deref())?;
         }
         None => {
             // No subcommand provided - run interactive mode

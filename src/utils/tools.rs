@@ -21,6 +21,52 @@ pub fn get_app_data_dir() -> Result<PathBuf> {
     Ok(data_dir)
 }
 
+/// Find an executable by checking PATH and common locations
+pub fn find_executable(name: &str, default_paths: &[&str]) -> Option<PathBuf> {
+    // Check if command is in PATH
+    if let Ok(output) = Command::new("where.exe").arg(name).output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout);
+            if let Some(first_line) = path.lines().next() {
+                let path = PathBuf::from(first_line.trim());
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    
+    // Check default installation paths
+    for path_str in default_paths {
+        let path = PathBuf::from(path_str);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    
+    None
+}
+
+/// Find mergecap executable (part of Wireshark)
+pub fn find_mergecap() -> Option<PathBuf> {
+    find_executable("mergecap", &[
+        r"C:\Program Files\Wireshark\mergecap.exe",
+        r"C:\Program Files (x86)\Wireshark\mergecap.exe",
+    ])
+}
+
+/// Ensure mergecap is available
+pub fn ensure_mergecap() -> Result<PathBuf> {
+    if let Some(path) = find_mergecap() {
+        println!("{} mergecap ({})", "Found:".green(), path.display());
+        return Ok(path);
+    }
+    
+    anyhow::bail!(
+        "mergecap not found. Please install Wireshark from https://www.wireshark.org/download.html"
+    )
+}
+
 /// Find azcopy executable - checks PATH first, then app data directory
 pub fn find_azcopy() -> Option<PathBuf> {
     // Check if azcopy is in PATH
