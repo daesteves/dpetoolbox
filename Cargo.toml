@@ -1,6 +1,6 @@
 [package]
 name = "dpetoolbox"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "DPE Network Analysis Toolbox - Modern CLI for network troubleshooting"
 authors = ["diesteve"]
