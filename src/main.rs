@@ -102,11 +102,13 @@ async fn interactive_download() -> Result<()> {
         anyhow::bail!("File not found: {}", file);
     }
 
-    // Prompt for output directory
-    let default_output = std::path::Path::new(&file)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string());
+    // Prompt for output directory - default to parent/filename_stem
+    let file_path = std::path::Path::new(&file);
+    let parent = file_path.parent().unwrap_or(std::path::Path::new("."));
+    let stem = file_path.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "downloads".to_string());
+    let default_output = parent.join(&stem).to_string_lossy().to_string();
 
     let output: String = Input::with_theme(&theme)
         .with_prompt("Output directory")
