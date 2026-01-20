@@ -63,9 +63,20 @@ pub fn ensure_mergecap() -> Result<PathBuf> {
         return Ok(path);
     }
     
-    anyhow::bail!(
-        "mergecap not found. Please install Wireshark from https://www.wireshark.org/download.html"
-    )
+    println!();
+    println!("{}", "╔════════════════════════════════════════════════════════════════╗".red());
+    println!("{}", "║                    WIRESHARK NOT FOUND                         ║".red());
+    println!("{}", "╠════════════════════════════════════════════════════════════════╣".red());
+    println!("{}", "║  The 'merge' command requires Wireshark to be installed.       ║".red());
+    println!("{}", "║                                                                ║".red());
+    println!("{}", "║  Please download and install Wireshark from:                   ║".red());
+    println!("{}", "║  https://www.wireshark.org/download.html                       ║".yellow());
+    println!("{}", "║                                                                ║".red());
+    println!("{}", "║  Make sure to include command-line tools during installation. ║".red());
+    println!("{}", "╚════════════════════════════════════════════════════════════════╝".red());
+    println!();
+    
+    anyhow::bail!("mergecap not found - Wireshark installation required")
 }
 
 /// Find tshark executable (part of Wireshark)
@@ -83,9 +94,20 @@ pub fn ensure_tshark() -> Result<PathBuf> {
         return Ok(path);
     }
     
-    anyhow::bail!(
-        "tshark not found. Please install Wireshark from https://www.wireshark.org/download.html"
-    )
+    println!();
+    println!("{}", "╔════════════════════════════════════════════════════════════════╗".red());
+    println!("{}", "║                    WIRESHARK NOT FOUND                         ║".red());
+    println!("{}", "╠════════════════════════════════════════════════════════════════╣".red());
+    println!("{}", "║  The 'filter' command requires Wireshark to be installed.      ║".red());
+    println!("{}", "║                                                                ║".red());
+    println!("{}", "║  Please download and install Wireshark from:                   ║".red());
+    println!("{}", "║  https://www.wireshark.org/download.html                       ║".yellow());
+    println!("{}", "║                                                                ║".red());
+    println!("{}", "║  Make sure to include command-line tools during installation. ║".red());
+    println!("{}", "╚════════════════════════════════════════════════════════════════╝".red());
+    println!();
+    
+    anyhow::bail!("tshark not found - Wireshark installation required")
 }
 
 /// Find capinfos executable (part of Wireshark)
@@ -103,9 +125,20 @@ pub fn ensure_capinfos() -> Result<PathBuf> {
         return Ok(path);
     }
     
-    anyhow::bail!(
-        "capinfos not found. Please install Wireshark from https://www.wireshark.org/download.html"
-    )
+    println!();
+    println!("{}", "╔════════════════════════════════════════════════════════════════╗".red());
+    println!("{}", "║                    WIRESHARK NOT FOUND                         ║".red());
+    println!("{}", "╠════════════════════════════════════════════════════════════════╣".red());
+    println!("{}", "║  The 'filter' command requires Wireshark to be installed.      ║".red());
+    println!("{}", "║                                                                ║".red());
+    println!("{}", "║  Please download and install Wireshark from:                   ║".red());
+    println!("{}", "║  https://www.wireshark.org/download.html                       ║".yellow());
+    println!("{}", "║                                                                ║".red());
+    println!("{}", "║  Make sure to include command-line tools during installation. ║".red());
+    println!("{}", "╚════════════════════════════════════════════════════════════════╝".red());
+    println!();
+    
+    anyhow::bail!("capinfos not found - Wireshark installation required")
 }
 
 /// Find azcopy executable - checks PATH first, then app data directory
