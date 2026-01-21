@@ -1,5 +1,6 @@
 mod commands;
 mod utils;
+mod web;
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
@@ -116,6 +117,15 @@ enum Commands {
         /// Interval between pings in seconds (default: 1)
         #[arg(long, default_value = "1")]
         interval: u64,
+    },
+    /// Start the web UI server
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox serve
+    dpetoolbox serve --port 8080")]
+    Serve {
+        /// Port to listen on (default: 3000)
+        #[arg(short, long, default_value = "3000")]
+        port: u16,
     },
 }
 
@@ -425,6 +435,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Tcpping { target, port, timeout, interval }) => {
             commands::tcpping::run(&target, port, timeout, interval)?;
+        }
+        Some(Commands::Serve { port }) => {
+            web::serve(port).await?;
         }
         None => {
             // No subcommand provided - run interactive mode
