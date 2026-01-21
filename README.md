@@ -1,12 +1,12 @@
 # DPE Toolbox
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.0.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
 </p>
 
-A modern CLI toolbox for network analysis, written in Rust. Designed for network engineers and support professionals who need efficient tools for packet capture analysis, file downloads, and connectivity testing.
+A tool developed to simplify common tasks in datapath analysis and diagnostics for DPEs. Available as both a CLI and a Web UI, written in Rust.
 
 ## ✨ Features
 
@@ -17,6 +17,28 @@ A modern CLI toolbox for network analysis, written in Rust. Designed for network
 | `filter` | Filter PCAP files using Wireshark display filters | Wireshark |
 | `convert` | Convert Windows ETL traces to PCAP format | etl2pcapng (auto-downloads) |
 | `tcpping` | TCP connectivity testing with continuous ping | None |
+| `serve` | **NEW** Launch Web UI for browser-based access | None |
+
+## 🌐 Web UI (New in v2.0)
+
+Launch the embedded web server to access all tools via your browser:
+
+```powershell
+dpetoolbox serve
+# Opens http://localhost:3000 automatically
+
+# Or specify a custom port
+dpetoolbox serve --port 8080
+```
+
+**Web UI Features:**
+- 🎨 Modern responsive design with dark mode support (follows OS theme)
+- 📋 All 5 tools available via intuitive forms
+- 📊 Real-time job progress and detailed logging
+- 🔄 Run multiple jobs simultaneously
+- 🖱️ No command-line knowledge required
+
+![Web UI Screenshot](https://via.placeholder.com/800x400?text=DPE+Toolbox+Web+UI)
 
 ## 📦 Installation
 
@@ -40,7 +62,10 @@ dpetoolbox --completions powershell >> $PROFILE
 ## 🚀 Quick Start
 
 ```powershell
-# Run interactive mode (recommended for first-time users)
+# Launch Web UI (recommended for first-time users)
+dpetoolbox serve
+
+# Or run interactive CLI mode
 dpetoolbox
 
 # Or use CLI flags directly
@@ -81,9 +106,13 @@ dpetoolbox download --clipboard -o C:\Downloads
 - ✅ Shows progress for each download
 - ✅ Summary with success/fail/skip counts
 
+**Default Output Location:**
+- If using a URL list file (`-f`), files are saved to a subfolder next to the txt file (e.g., `urls.txt` → `urls/`)
+- If using clipboard or custom output, files are saved to the specified directory
+
 ---
 
-### Merge
+### PCAP Merge
 
 Merges multiple PCAP files by IP address. Files are grouped by IP pattern in filename (e.g., `capture_10.0.0.1.pcap`) and merged into single files per IP.
 
@@ -101,13 +130,17 @@ dpetoolbox merge -i ./pcaps -o ./merged
 | `-i, --input <DIR>` | Directory containing PCAP files | Required |
 | `-o, --output <DIR>` | Output directory for merged files | Same as input |
 
+**Filename Pattern:**
+Files must end with `_X.X.X.X.pcap` to be grouped. For example:
+- `capture_10.0.0.1.pcap` + `trace_10.0.0.1.pcap` → `10.0.0.1_merged.pcap`
+
 **Requirements:**
 - ⚠️ Requires [Wireshark](https://www.wireshark.org/download.html) to be installed
 - Uses `mergecap` command-line tool from Wireshark
 
 ---
 
-### Filter
+### PCAP Filter
 
 Filters PCAP files using Wireshark display filter syntax. Applies the filter to all PCAP files in a directory.
 
@@ -135,7 +168,7 @@ dpetoolbox filter -i ./pcaps -F "ip.addr == 10.0.0.1 && tcp.flags.syn == 1"
 
 **Features:**
 - ✅ Supports full Wireshark display filter syntax
-- ✅ VXLAN decoding on common ports (65330, 65530, 10000, 20000)
+- ✅ VXLAN auto-decode on common ports (65330, 65530, 10000, 20000)
 - ✅ Shows packet count for each filtered file
 - ✅ Option to auto-delete empty results
 
@@ -145,7 +178,7 @@ dpetoolbox filter -i ./pcaps -F "ip.addr == 10.0.0.1 && tcp.flags.syn == 1"
 
 ---
 
-### Convert
+### ETL → PCAP Convert
 
 Converts Windows ETL (Event Trace Log) files to PCAP format for analysis in Wireshark.
 
@@ -211,7 +244,33 @@ Starting: TCP ping to google.com on port 443. Press Esc to stop.
 
 ---
 
-## 🖥️ Interactive Mode
+### Web UI Server
+
+Launches an embedded web server providing browser-based access to all tools.
+
+```powershell
+# Start on default port 3000
+dpetoolbox serve
+
+# Custom port
+dpetoolbox serve --port 8080
+```
+
+**Options:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--port <PORT>` | HTTP port to listen on | 3000 |
+
+**Features:**
+- ✅ Auto-opens browser on startup
+- ✅ Dark mode support (follows OS theme)
+- ✅ Real-time job progress with detailed logs
+- ✅ Multiple concurrent jobs supported
+- ✅ Responsive design for different screen sizes
+
+---
+
+## 🖥️ Interactive CLI Mode
 
 Run `dpetoolbox` without arguments to enter interactive mode with a menu:
 
@@ -268,4 +327,6 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 👤 Author
 
-**diesteve** - DPE Network Analysis Team
+**Diogo Esteves (diesteve)** + GitHub Copilot
+
+DPE Network Analysis Team
