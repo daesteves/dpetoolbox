@@ -38,7 +38,7 @@ dpetoolbox serve --port 8080
 - 🔄 Run multiple jobs simultaneously
 - 🖱️ No command-line knowledge required
 
-![Web UI Screenshot](https://via.placeholder.com/800x400?text=DPE+Toolbox+Web+UI)
+![Web UI Screenshot](docs/dpetoolboxwebui.png)
 
 ## 📦 Installation
 
