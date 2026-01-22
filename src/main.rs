@@ -12,7 +12,7 @@ use std::io;
 #[derive(Parser)]
 #[command(name = "dpetoolbox")]
 #[command(author = "Diogo Esteves")]
-#[command(version = "1.0.0")]
+#[command(version = "2.0.0")]
 #[command(about = "DPE Network Analysis Toolbox", long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {

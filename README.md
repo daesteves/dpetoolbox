@@ -282,7 +282,7 @@ Run `dpetoolbox` without arguments to enter interactive mode with a menu:
    | |__| | |    | |____     | | (_) | (_) | | |_) | (_) >  <
    |_____/|_|    |______|    |_|\___/ \___/|_|_.__/ \___/_/\_\
 
-          by diesteve
+          by Diogo Esteves
 
 Select an option:
 
