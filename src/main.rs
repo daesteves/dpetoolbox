@@ -11,7 +11,7 @@ use std::io;
 
 #[derive(Parser)]
 #[command(name = "dpetoolbox")]
-#[command(author = "diesteve")]
+#[command(author = "Diogo Esteves")]
 #[command(version = "1.0.0")]
 #[command(about = "DPE Network Analysis Toolbox", long_about = None)]
 #[command(propagate_version = true)]
@@ -138,7 +138,7 @@ fn show_banner() {
     println!("{}", "   | |__| | |    | |____     | | (_) | (_) | | |_) | (_) >  <   ".cyan());
     println!("{}", "   |_____/|_|    |______|    |_|\\___/ \\___/|_|_.__/ \\___/_/\\_\\  ".cyan());
     println!();
-    println!("{}", "          by diesteve                                          ".magenta());
+    println!("{}", "          by Diogo Esteves                                    ".magenta());
     println!();
 }
 

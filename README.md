@@ -327,6 +327,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 👤 Author
 
-**Diogo Esteves (diesteve)** + GitHub Copilot
-
-DPE Network Analysis Team
+**Diogo Esteves** + GitHub Copilot

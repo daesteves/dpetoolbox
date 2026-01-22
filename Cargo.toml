@@ -3,7 +3,7 @@ name = "dpetoolbox"
 version = "2.0.0"
 edition = "2024"
 description = "DPE Network Analysis Toolbox - CLI and Web UI for network troubleshooting"
-authors = ["diesteve"]
+authors = ["Diogo Esteves"]
 license = "MIT"
 
 [dependencies]
