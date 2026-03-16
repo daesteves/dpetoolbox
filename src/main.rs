@@ -12,7 +12,7 @@ use std::io;
 #[derive(Parser)]
 #[command(name = "dpetoolbox")]
 #[command(author = "Diogo Esteves")]
-#[command(version = "2.0.0")]
+#[command(version = "2.0.1")]
 #[command(about = "DPE Network Analysis Toolbox", long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
@@ -22,6 +22,10 @@ struct Cli {
     /// Generate shell completions
     #[arg(long, value_name = "SHELL")]
     completions: Option<Shell>,
+
+    /// Launch interactive CLI mode instead of Web UI
+    #[arg(long)]
+    cli: bool,
 }
 
 #[derive(Subcommand)]
@@ -48,10 +52,13 @@ enum Commands {
         #[arg(short, long, default_value = "4")]
         threads: u32,
     },
-    /// Merge PCAP files by IP address (requires Wireshark/mergecap)
+    /// Merge PCAP files (by IP address if detected, otherwise all into one; requires Wireshark/mergecap)
     #[command(after_help = "EXAMPLES:
     dpetoolbox merge -i ./pcaps
-    dpetoolbox merge -i ./pcaps -o ./merged")]
+    dpetoolbox merge -i ./pcaps -o ./merged
+
+If filenames end with _X.X.X.X.pcap, files are merged per IP.
+Otherwise, all PCAP files are merged into a single merged.pcap.")]
     Merge {
         /// Directory containing PCAP files to merge
         #[arg(short, long)]
@@ -64,12 +71,17 @@ enum Commands {
     /// Filter PCAP files using Wireshark display filter (requires Wireshark/tshark)
     #[command(after_help = "EXAMPLES:
     dpetoolbox filter -i ./pcaps -F \"ip.src == 10.0.0.1\"
+    dpetoolbox filter -f capture.pcap -F \"tcp.port == 443\"
     dpetoolbox filter -i ./pcaps -F \"tcp.port == 443\" -d
     dpetoolbox filter -i ./pcaps -o ./filtered -F \"http\"")]
     Filter {
         /// Directory containing PCAP files to filter
-        #[arg(short, long)]
-        input: String,
+        #[arg(short, long, required_unless_present = "file")]
+        input: Option<String>,
+
+        /// Single PCAP file to filter
+        #[arg(short, long, required_unless_present = "input")]
+        file: Option<String>,
 
         /// Output directory for filtered files (default: same as input)
         #[arg(short, long)]
@@ -281,20 +293,42 @@ fn interactive_merge() -> Result<()> {
 fn interactive_filter() -> Result<()> {
     let theme = ColorfulTheme::default();
 
-    // Prompt for source directory
-    let input: String = Input::with_theme(&theme)
-        .with_prompt("Directory containing PCAP files")
-        .interact_text()?;
+    // Ask whether to filter a single file or a directory
+    let mode = Select::with_theme(&theme)
+        .with_prompt("Filter mode")
+        .items(&["Filter a single PCAP file", "Filter all PCAP files in a directory"])
+        .default(0)
+        .interact()?;
 
-    // Validate directory exists
-    if !std::path::Path::new(&input).exists() {
-        anyhow::bail!("Directory not found: {}", input);
-    }
+    let (input_dir, single_file) = if mode == 0 {
+        let file: String = Input::with_theme(&theme)
+            .with_prompt("Path to PCAP file")
+            .interact_text()?;
+        if !std::path::Path::new(&file).exists() {
+            anyhow::bail!("File not found: {}", file);
+        }
+        (None, Some(file))
+    } else {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("Directory containing PCAP files")
+            .interact_text()?;
+        if !std::path::Path::new(&input).exists() {
+            anyhow::bail!("Directory not found: {}", input);
+        }
+        (Some(input), None)
+    };
 
     // Prompt for output directory
+    let default_output = if let Some(ref dir) = input_dir {
+        dir.clone()
+    } else {
+        let p = std::path::Path::new(single_file.as_ref().unwrap());
+        p.parent().unwrap_or(std::path::Path::new(".")).to_string_lossy().to_string()
+    };
+
     let output: String = Input::with_theme(&theme)
         .with_prompt("Output directory for filtered files")
-        .default(input.clone())
+        .default(default_output.clone())
         .interact_text()?;
 
     // Prompt for filter
@@ -314,9 +348,13 @@ fn interactive_filter() -> Result<()> {
 
     println!();
 
-    // Run the filter
-    let output_opt = if output == input { None } else { Some(output.as_str()) };
-    commands::filter::run(&input, output_opt, &filter, delete_empty)
+    let output_opt = if output == default_output { None } else { Some(output.as_str()) };
+
+    if let Some(file) = single_file {
+        commands::filter::run_single(&file, output_opt, &filter, delete_empty)
+    } else {
+        commands::filter::run(input_dir.as_ref().unwrap(), output_opt, &filter, delete_empty)
+    }
 }
 
 /// Interactive convert prompts
@@ -427,8 +465,14 @@ async fn main() -> Result<()> {
         Some(Commands::Merge { input, output }) => {
             commands::merge::run(&input, output.as_deref())?;
         }
-        Some(Commands::Filter { input, output, filter, delete_empty }) => {
-            commands::filter::run(&input, output.as_deref(), &filter, delete_empty)?;
+        Some(Commands::Filter { input, file, output, filter, delete_empty }) => {
+            if let Some(file) = file {
+                commands::filter::run_single(&file, output.as_deref(), &filter, delete_empty)?;
+            } else if let Some(input) = input {
+                commands::filter::run(&input, output.as_deref(), &filter, delete_empty)?;
+            } else {
+                anyhow::bail!("Either --input or --file must be provided");
+            }
         }
         Some(Commands::Convert { input, output }) => {
             commands::convert::run(&input, output.as_deref()).await?;
@@ -440,8 +484,13 @@ async fn main() -> Result<()> {
             web::serve(port).await?;
         }
         None => {
-            // No subcommand provided - run interactive mode
-            interactive_mode().await?;
+            if cli.cli {
+                // --cli flag: run interactive menu mode
+                interactive_mode().await?;
+            } else {
+                // Default: launch Web UI
+                web::serve(3000).await?;
+            }
         }
     }
 

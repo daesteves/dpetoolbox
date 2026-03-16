@@ -46,6 +46,93 @@ fn get_packet_count(capinfos_path: &Path, pcap_path: &Path) -> Result<u64> {
     Ok(0)
 }
 
+/// Run the filter command on a single PCAP file
+pub fn run_single(
+    file_path: &str,
+    output_dir: Option<&str>,
+    filter: &str,
+    delete_empty: bool,
+) -> Result<()> {
+    let tshark = ensure_tshark()?;
+    let capinfos = ensure_capinfos()?;
+
+    let pcap_path = Path::new(file_path);
+    if !pcap_path.exists() {
+        anyhow::bail!("File not found: {}", file_path);
+    }
+    if !pcap_path.is_file() {
+        anyhow::bail!("Not a file: {}", file_path);
+    }
+
+    let output_path = output_dir
+        .map(Path::new)
+        .unwrap_or_else(|| pcap_path.parent().unwrap_or(Path::new(".")));
+
+    if !output_path.exists() {
+        fs::create_dir_all(output_path)
+            .context("Failed to create output directory")?;
+    }
+
+    let filename = pcap_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let output_file = output_path.join(format!("{}_filtered.pcap", filename));
+
+    println!("{} {}", "Filter:".cyan(), filter);
+    println!(
+        "{} {}",
+        "Filtering:".cyan(),
+        pcap_path.file_name().unwrap_or_default().to_string_lossy()
+    );
+
+    let mut cmd = Command::new(&tshark);
+    for arg in VXLAN_DECODE_ARGS {
+        cmd.arg(arg);
+    }
+    cmd.arg("-r").arg(pcap_path);
+    cmd.arg("-Y").arg(filter);
+    cmd.arg("-w").arg(&output_file);
+
+    match cmd.output() {
+        Ok(output) => {
+            if output_file.exists() {
+                let packet_count = get_packet_count(&capinfos, &output_file).unwrap_or(0);
+                let file_size = fs::metadata(&output_file).map(|m| m.len()).unwrap_or(0);
+
+                if packet_count == 0 {
+                    if delete_empty {
+                        if let Err(e) = fs::remove_file(&output_file) {
+                            println!("  {} Could not delete: {}", "Warning:".yellow(), e);
+                        } else {
+                            println!("  {} 0 packets - {}", "Result:".yellow(), "DELETED".yellow());
+                        }
+                    } else {
+                        println!("  {} 0 packets, {} bytes - {}", "Result:".yellow(), file_size, "KEPT".yellow());
+                    }
+                } else {
+                    println!("  {} {} packets, {} bytes - {}", "Result:".green(), packet_count, file_size, "SAVED".green());
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.is_empty() {
+                    println!("  {} No output created: {}", "Error:".red(), stderr.trim());
+                } else {
+                    println!("  {} No output created", "Error:".red());
+                }
+            }
+        }
+        Err(e) => {
+            println!("  {} {}", "Error:".red(), e);
+        }
+    }
+
+    println!();
+    println!("{}", "Filtering complete.".cyan());
+    Ok(())
+}
+
 /// Run the filter command
 pub fn run(
     input_dir: &str,

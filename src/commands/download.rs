@@ -11,7 +11,8 @@ use std::time::Instant;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
-/// Parse URLs from a file (lines containing "http")
+/// Parse URLs from a file, supporting both plain URLs and prefixed formats
+/// (e.g., "Ethernet19/1.4, https://...")
 fn parse_urls_from_file(file_path: &Path) -> Result<Vec<String>> {
     let content = fs::read_to_string(file_path)
         .context(format!("Failed to read file: {}", file_path.display()))?;
@@ -19,7 +20,14 @@ fn parse_urls_from_file(file_path: &Path) -> Result<Vec<String>> {
     let urls: Vec<String> = content
         .lines()
         .filter(|line| line.contains("http"))
-        .map(|s| s.trim().to_string())
+        .filter_map(|line| {
+            // Find the start of the URL (http:// or https://)
+            if let Some(idx) = line.find("http://").or_else(|| line.find("https://")) {
+                Some(line[idx..].trim().to_string())
+            } else {
+                None
+            }
+        })
         .collect();
     
     Ok(urls)

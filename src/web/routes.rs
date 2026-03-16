@@ -161,7 +161,8 @@ async fn start_merge(
 
 #[derive(Deserialize)]
 pub struct FilterForm {
-    input: String,
+    input: Option<String>,
+    single_file: Option<String>,
     output: Option<String>,
     filter: String,
     delete_empty: Option<String>,
@@ -176,12 +177,13 @@ async fn start_filter(
     
     let state_clone = state.clone();
     let input = form.input.clone();
+    let single_file = form.single_file.clone();
     let output = form.output.clone();
     let filter = form.filter.clone();
     let delete_empty = form.delete_empty.as_deref() == Some("on");
     
     tokio::spawn(async move {
-        run_filter_job(state_clone, &job_id, &input, output.as_deref(), &filter, delete_empty).await;
+        run_filter_job(state_clone, &job_id, input.as_deref(), single_file.as_deref(), output.as_deref(), &filter, delete_empty).await;
     });
 
     Html(job_card_html(&job))
@@ -307,10 +309,17 @@ async fn run_download_job(state: AppState, job_id: &str, urls: Option<&str>, fil
         urls.unwrap_or("").to_string()
     };
 
-    // Parse URLs
+    // Parse URLs, supporting prefixed formats (e.g., "Ethernet19/1.4, https://...")
     let url_list: Vec<String> = url_content.lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty() && l.starts_with("http"))
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && l.contains("http"))
+        .filter_map(|line| {
+            if let Some(idx) = line.find("http://").or_else(|| line.find("https://")) {
+                Some(line[idx..].trim().to_string())
+            } else {
+                None
+            }
+        })
         .collect();
 
     if url_list.is_empty() {
@@ -548,12 +557,12 @@ async fn run_merge_job(state: AppState, job_id: &str, input: &str, output: Optio
         job.output.push(format!("Output: {}", output_path.display()));
     });
 
-    // Group files by IP address (pattern: _X.X.X.X.pcap)
-    let ip_regex = Regex::new(r"_(\d{1,3}(?:\.\d{1,3}){3})\.pcap$").unwrap();
-    let mut grouped: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
-
-    let entries = match std::fs::read_dir(input_path) {
-        Ok(e) => e,
+    // Collect all PCAP files
+    let pcap_files: Vec<std::path::PathBuf> = match std::fs::read_dir(input_path) {
+        Ok(e) => e.filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().map(|ext| ext.to_string_lossy().to_lowercase() == "pcap").unwrap_or(false))
+            .collect(),
         Err(e) => {
             state.update_job(job_id, |job| {
                 job.status = JobStatus::Failed;
@@ -563,58 +572,120 @@ async fn run_merge_job(state: AppState, job_id: &str, input: &str, output: Optio
         }
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext.to_string_lossy().to_lowercase() == "pcap" {
-                    if let Some(filename) = path.file_name() {
-                        let filename_str = filename.to_string_lossy();
-                        if let Some(caps) = ip_regex.captures(&filename_str) {
-                            let ip = caps[1].to_string();
-                            grouped.entry(ip).or_default().push(path);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if grouped.is_empty() {
+    if pcap_files.is_empty() {
         state.update_job(job_id, |job| {
             job.status = JobStatus::Completed;
             job.progress = 100;
-            job.message = "No matching files found".to_string();
-            job.output.push("No PCAP files with IP pattern (filename_X.X.X.X.pcap) found.".to_string());
+            job.message = "No PCAP files found".to_string();
+            job.output.push("No PCAP files found in directory.".to_string());
         });
         return;
     }
 
-    let total = grouped.len();
-    state.update_job(job_id, |job| {
-        job.message = format!("Merging files for {} IP(s)...", total);
-        job.output.push(format!("Found {} unique IP addresses", total));
-        job.output.push("─".repeat(40));
-    });
+    // Try to group files by IP address (pattern: _X.X.X.X.pcap)
+    let ip_regex = Regex::new(r"_(\d{1,3}(?:\.\d{1,3}){3})\.pcap$").unwrap();
+    let mut grouped: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
 
-    let mut success = 0u32;
-    let mut failed = 0u32;
-    let mut ips: Vec<_> = grouped.keys().cloned().collect();
-    ips.sort();
+    for path in &pcap_files {
+        if let Some(filename) = path.file_name() {
+            let filename_str = filename.to_string_lossy();
+            if let Some(caps) = ip_regex.captures(&filename_str) {
+                let ip = caps[1].to_string();
+                grouped.entry(ip).or_default().push(path.clone());
+            }
+        }
+    }
 
-    for (i, ip) in ips.iter().enumerate() {
-        let files = &grouped[ip];
-        let output_file = output_path.join(format!("{}_merged.pcap", ip));
-
+    if !grouped.is_empty() {
+        // IP-based merge mode
+        let total = grouped.len();
         state.update_job(job_id, |job| {
-            job.progress = ((i * 100) / total) as u32;
-            job.output.push(format!("[{}/{}] Merging {} file(s) for IP {}", i + 1, total, files.len(), ip));
+            job.message = format!("Merging files for {} IP(s)...", total);
+            job.output.push(format!("Mode: {} unique IP addresses found - merging by IP", total));
+            job.output.push("─".repeat(40));
         });
 
-        // Build mergecap command
+        let mut success = 0u32;
+        let mut failed = 0u32;
+        let mut ips: Vec<_> = grouped.keys().cloned().collect();
+        ips.sort();
+
+        for (i, ip) in ips.iter().enumerate() {
+            let files = &grouped[ip];
+            let output_file = output_path.join(format!("{}_merged.pcap", ip));
+
+            state.update_job(job_id, |job| {
+                job.progress = ((i * 100) / total) as u32;
+                job.output.push(format!("[{}/{}] Merging {} file(s) for IP {}", i + 1, total, files.len(), ip));
+            });
+
+            let mut cmd = std::process::Command::new(&mergecap);
+            cmd.arg("-w").arg(&output_file);
+            for file in files {
+                cmd.arg(file);
+            }
+
+            match cmd.output() {
+                Ok(cmd_output) => {
+                    if cmd_output.status.success() && output_file.exists() {
+                        let size = std::fs::metadata(&output_file).map(|m| m.len()).unwrap_or(0);
+                        success += 1;
+                        state.update_job(job_id, |job| {
+                            job.output.push(format!("  → {}_merged.pcap ({} bytes) - OK", ip, size));
+                        });
+                    } else {
+                        failed += 1;
+                        let stderr = String::from_utf8_lossy(&cmd_output.stderr);
+                        state.update_job(job_id, |job| {
+                            job.output.push(format!("  → ERROR: {}", stderr.lines().next().unwrap_or("Unknown error")));
+                        });
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    state.update_job(job_id, |job| {
+                        job.output.push(format!("  → ERROR: {}", e));
+                    });
+                }
+            }
+        }
+
+        state.update_job(job_id, |job| {
+            job.progress = 100;
+            job.output.push("─".repeat(40));
+            job.output.push("=== Merge Summary ===".to_string());
+            job.output.push(format!("Successful: {}", success));
+            if failed > 0 {
+                job.output.push(format!("Failed: {}", failed));
+            }
+            job.output.push(format!("Output: {}", output_path.display()));
+
+            if failed == 0 {
+                job.status = JobStatus::Completed;
+                job.message = format!("Merged files for {} IP(s)", success);
+            } else {
+                job.status = JobStatus::Failed;
+                job.message = format!("Completed with {} failure(s)", failed);
+            }
+        });
+    } else {
+        // No IP pattern found - merge all files into one
+        let total = pcap_files.len();
+        state.update_job(job_id, |job| {
+            job.message = format!("Merging all {} files...", total);
+            job.output.push(format!("Mode: No IP pattern detected - merging all {} files into one", total));
+            job.output.push("─".repeat(40));
+        });
+
+        let output_file = output_path.join("merged.pcap");
+
+        state.update_job(job_id, |job| {
+            job.output.push(format!("Merging {} file(s) → merged.pcap", total));
+        });
+
         let mut cmd = std::process::Command::new(&mergecap);
         cmd.arg("-w").arg(&output_file);
-        for file in files {
+        for file in &pcap_files {
             cmd.arg(file);
         }
 
@@ -622,49 +693,39 @@ async fn run_merge_job(state: AppState, job_id: &str, input: &str, output: Optio
             Ok(cmd_output) => {
                 if cmd_output.status.success() && output_file.exists() {
                     let size = std::fs::metadata(&output_file).map(|m| m.len()).unwrap_or(0);
-                    success += 1;
                     state.update_job(job_id, |job| {
-                        job.output.push(format!("  → {}_merged.pcap ({} bytes) - OK", ip, size));
+                        job.progress = 100;
+                        job.output.push(format!("  → merged.pcap ({} bytes) - OK", size));
+                        job.output.push("─".repeat(40));
+                        job.output.push("=== Merge Summary ===".to_string());
+                        job.output.push(format!("Merged {} files into merged.pcap", total));
+                        job.output.push(format!("Output: {}", output_path.display()));
+                        job.status = JobStatus::Completed;
+                        job.message = format!("Merged {} files into merged.pcap", total);
                     });
                 } else {
-                    failed += 1;
                     let stderr = String::from_utf8_lossy(&cmd_output.stderr);
                     state.update_job(job_id, |job| {
+                        job.progress = 100;
                         job.output.push(format!("  → ERROR: {}", stderr.lines().next().unwrap_or("Unknown error")));
+                        job.status = JobStatus::Failed;
+                        job.message = "Merge failed".to_string();
                     });
                 }
             }
             Err(e) => {
-                failed += 1;
                 state.update_job(job_id, |job| {
+                    job.progress = 100;
                     job.output.push(format!("  → ERROR: {}", e));
+                    job.status = JobStatus::Failed;
+                    job.message = "Merge failed".to_string();
                 });
             }
         }
     }
-
-    // Final summary
-    state.update_job(job_id, |job| {
-        job.progress = 100;
-        job.output.push("─".repeat(40));
-        job.output.push("=== Merge Summary ===".to_string());
-        job.output.push(format!("Successful: {}", success));
-        if failed > 0 {
-            job.output.push(format!("Failed: {}", failed));
-        }
-        job.output.push(format!("Output: {}", output_path.display()));
-
-        if failed == 0 {
-            job.status = JobStatus::Completed;
-            job.message = format!("Merged files for {} IP(s)", success);
-        } else {
-            job.status = JobStatus::Failed;
-            job.message = format!("Completed with {} failure(s)", failed);
-        }
-    });
 }
 
-async fn run_filter_job(state: AppState, job_id: &str, input: &str, output: Option<&str>, filter: &str, delete_empty: bool) {
+async fn run_filter_job(state: AppState, job_id: &str, input: Option<&str>, single_file: Option<&str>, output: Option<&str>, filter: &str, delete_empty: bool) {
     use crate::utils::tools::{ensure_tshark, ensure_capinfos};
     use regex::Regex;
     
@@ -709,21 +770,64 @@ async fn run_filter_job(state: AppState, job_id: &str, input: &str, output: Opti
         }
     };
 
-    let input_path = std::path::Path::new(input);
-    if !input_path.exists() {
+    // Determine mode: single file or directory
+    let single_file_path = single_file
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from);
+
+    let input_dir_path = input
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from);
+
+    // Resolve pcap_files and output_path based on mode
+    let (pcap_files, output_path) = if let Some(ref sf) = single_file_path {
+        if !sf.exists() {
+            state.update_job(job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.message = format!("File not found: {}", sf.display());
+            });
+            return;
+        }
+        let out = match output {
+            Some(out) if !out.trim().is_empty() => std::path::PathBuf::from(out),
+            _ => sf.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+        };
+        (vec![sf.clone()], out)
+    } else if let Some(ref dir) = input_dir_path {
+        if !dir.exists() {
+            state.update_job(job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.message = format!("Directory not found: {}", dir.display());
+            });
+            return;
+        }
+        let out = match output {
+            Some(out) if !out.trim().is_empty() => std::path::PathBuf::from(out),
+            _ => dir.to_path_buf(),
+        };
+        let files: Vec<_> = match std::fs::read_dir(dir) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|ext| ext.to_string_lossy().to_lowercase() == "pcap").unwrap_or(false))
+                .collect(),
+            Err(e) => {
+                state.update_job(job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.message = format!("Failed to read directory: {}", e);
+                });
+                return;
+            }
+        };
+        (files, out)
+    } else {
         state.update_job(job_id, |job| {
             job.status = JobStatus::Failed;
-            job.message = format!("Input directory not found: {}", input);
+            job.message = "No input file or directory specified".to_string();
         });
         return;
-    }
-
-    // Use custom output path if provided, otherwise save to input directory
-    let output_path = match output {
-        Some(out) if !out.trim().is_empty() => std::path::Path::new(out).to_path_buf(),
-        _ => input_path.to_path_buf(),
     };
-    
+
     // Create output directory if needed
     if !output_path.exists() {
         if let Err(e) = std::fs::create_dir_all(&output_path) {
@@ -735,28 +839,12 @@ async fn run_filter_job(state: AppState, job_id: &str, input: &str, output: Opti
         }
     }
 
-    // Find all PCAP files
-    let pcap_files: Vec<_> = match std::fs::read_dir(input_path) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().map(|ext| ext.to_string_lossy().to_lowercase() == "pcap").unwrap_or(false))
-            .collect(),
-        Err(e) => {
-            state.update_job(job_id, |job| {
-                job.status = JobStatus::Failed;
-                job.message = format!("Failed to read directory: {}", e);
-            });
-            return;
-        }
-    };
-
     if pcap_files.is_empty() {
         state.update_job(job_id, |job| {
             job.status = JobStatus::Completed;
             job.progress = 100;
             job.message = "No PCAP files found".to_string();
-            job.output.push("No PCAP files found in directory.".to_string());
+            job.output.push("No PCAP files found.".to_string());
         });
         return;
     }
@@ -1481,8 +1569,8 @@ const DOWNLOAD_FORM_HTML: &str = r##"<form hx-post="/api/download" hx-target="#j
 </form>"##;
 
 const MERGE_FORM_HTML: &str = r##"<form hx-post="/api/merge" hx-target="#jobs-list" hx-swap="afterbegin">
-    <h3 class="text-lg font-semibold mb-2 dark:text-white">Merge PCAP Files by IP</h3>
-    <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Uses <strong>mergecap</strong> (Wireshark's CLI) to combine PCAP files that share the same IP address in their filename.</p>
+    <h3 class="text-lg font-semibold mb-2 dark:text-white">Merge PCAP Files</h3>
+    <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Uses <strong>mergecap</strong> (Wireshark's CLI) to combine PCAP files. Automatically groups by IP if filenames match the pattern, otherwise merges all files into one.</p>
     <div class="space-y-4">
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Input Directory</label>
@@ -1498,7 +1586,7 @@ const MERGE_FORM_HTML: &str = r##"<form hx-post="/api/merge" hx-target="#jobs-li
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">If not specified, merged files are saved to the input directory</p>
         </div>
         <div class="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-md p-3 text-sm text-blue-800 dark:text-blue-300">
-            <strong>📋 Filename pattern:</strong> Files must end with <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">_X.X.X.X.pcap</code> (e.g., <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">capture_10.0.0.1.pcap</code>). Files with the same IP are merged into <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">10.0.0.1_merged.pcap</code>.
+            <strong>📋 Smart merge:</strong> If filenames end with <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">_X.X.X.X.pcap</code> (e.g., <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">capture_10.0.0.1.pcap</code>), files are grouped and merged per IP. Otherwise, all PCAP files are merged into a single <code class="bg-blue-100 dark:bg-blue-800 px-1 rounded">merged.pcap</code>.
         </div>
         <div class="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-md p-3 text-sm text-yellow-800 dark:text-yellow-300">
             ⚠️ Requires Wireshark to be installed (provides mergecap)
@@ -1513,12 +1601,34 @@ const FILTER_FORM_HTML: &str = r##"<form hx-post="/api/filter" hx-target="#jobs-
     <h3 class="text-lg font-semibold mb-2 dark:text-white">PCAP Filtering</h3>
     <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Uses <strong>tshark</strong> (Wireshark's CLI) to apply display filters to PCAP files, extracting only matching packets.</p>
     <div class="space-y-4">
+        <!-- Single file option -->
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Single PCAP File (optional)</label>
+            <input type="text" name="single_file"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                placeholder="C:\path\to\capture.pcap">
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Filter a single PCAP file</p>
+        </div>
+        
+        <!-- Divider -->
+        <div class="relative">
+            <div class="absolute inset-0 flex items-center">
+                <div class="w-full border-t border-gray-300 dark:border-gray-600"></div>
+            </div>
+            <div class="relative flex justify-center text-sm">
+                <span class="px-2 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400">OR filter entire directory</span>
+            </div>
+        </div>
+        
+        <!-- Directory option -->
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Input Directory</label>
-            <input type="text" name="input" required
+            <input type="text" name="input"
                 class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
                 placeholder="C:\PCAPs">
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Filter all PCAP files in directory</p>
         </div>
+        
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Wireshark Display Filter</label>
             <input type="text" name="filter" required
@@ -1530,7 +1640,7 @@ const FILTER_FORM_HTML: &str = r##"<form hx-post="/api/filter" hx-target="#jobs-
             <input type="text" name="output"
                 class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
                 placeholder="Same as input">
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">If not specified, filtered files (_filtered.pcap) are saved to the input directory</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">If not specified, filtered files (_filtered.pcap) are saved alongside the input</p>
         </div>
         <div class="flex items-center">
             <input type="checkbox" name="delete_empty" id="delete_empty" class="h-4 w-4 text-cyan-600 rounded">
