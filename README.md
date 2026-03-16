@@ -1,7 +1,7 @@
 # DPE Toolbox
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.0.2-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
 </p>
@@ -13,11 +13,13 @@ A tool developed to simplify common tasks in datapath analysis and diagnostics f
 | Command | Description | External Dependency |
 |---------|-------------|---------------------|
 | `download` | Multi-threaded file downloads from URL lists | azcopy (auto-downloads) |
-| `merge` | Merge PCAP files grouped by IP address | Wireshark |
+| `merge` | Merge PCAP files (by IP or all into one) | Wireshark |
 | `filter` | Filter PCAP files using Wireshark display filters | Wireshark |
 | `convert` | Convert Windows ETL traces to PCAP format | etl2pcapng (auto-downloads) |
+| `summary` | Show PCAP file statistics and protocol hierarchy | Wireshark |
+| `conversations` | List and export network flows from PCAPs | Wireshark |
 | `tcpping` | TCP connectivity testing with continuous ping | None |
-| `serve` | **NEW** Launch Web UI for browser-based access | None |
+| `serve` | Launch Web UI for browser-based access | None |
 
 ## 🌐 Web UI (New in v2.0)
 

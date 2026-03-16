@@ -12,7 +12,7 @@ use std::io;
 #[derive(Parser)]
 #[command(name = "dpetoolbox")]
 #[command(author = "Diogo Esteves")]
-#[command(version = "2.0.1")]
+#[command(version = "2.0.2")]
 #[command(about = "DPE Network Analysis Toolbox", long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
@@ -139,6 +139,37 @@ Otherwise, all PCAP files are merged into a single merged.pcap.")]
         #[arg(short, long, default_value = "3000")]
         port: u16,
     },
+    /// Show PCAP file summary and statistics (requires Wireshark)
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox summary -f capture.pcap
+    dpetoolbox summary -i ./pcaps")]
+    Summary {
+        /// Single PCAP file to summarize
+        #[arg(short, long, required_unless_present = "input")]
+        file: Option<String>,
+
+        /// Directory containing PCAP files to summarize
+        #[arg(short, long, required_unless_present = "file")]
+        input: Option<String>,
+    },
+    /// List and export PCAP conversations/flows (requires Wireshark)
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox conversations -f capture.pcap
+    dpetoolbox conversations -f capture.pcap --export 1
+    dpetoolbox conversations -f capture.pcap --export 3 -o ./flows")]
+    Conversations {
+        /// PCAP file to analyze
+        #[arg(short, long)]
+        file: String,
+
+        /// Export conversation by index number (shown in listing)
+        #[arg(short, long)]
+        export: Option<usize>,
+
+        /// Output directory for exported flow (default: same as input)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 fn show_banner() {
@@ -157,9 +188,11 @@ fn show_banner() {
 /// Interactive menu options
 const MENU_OPTIONS: &[&str] = &[
     "Download files from URL list",
-    "Merge PCAP files by IP",
+    "Merge PCAP files",
     "Filter PCAP files",
     "Convert ETL to PCAP",
+    "PCAP Summary",
+    "PCAP Conversations",
     "TCP Ping",
     "Exit",
 ];
@@ -203,12 +236,24 @@ async fn interactive_mode() -> Result<()> {
                 }
             }
             4 => {
+                // PCAP Summary
+                if let Err(e) = interactive_summary() {
+                    println!("{} {}", "Error:".red().bold(), e);
+                }
+            }
+            5 => {
+                // PCAP Conversations
+                if let Err(e) = interactive_conversations() {
+                    println!("{} {}", "Error:".red().bold(), e);
+                }
+            }
+            6 => {
                 // TCP Ping
                 if let Err(e) = interactive_tcpping() {
                     println!("{} {}", "Error:".red().bold(), e);
                 }
             }
-            5 => {
+            7 => {
                 // Exit
                 println!("{}", "Goodbye!".cyan());
                 break;
@@ -420,6 +465,85 @@ fn interactive_tcpping() -> Result<()> {
     commands::tcpping::run(&target, port, timeout, interval)
 }
 
+/// Interactive summary prompts
+fn interactive_summary() -> Result<()> {
+    let theme = ColorfulTheme::default();
+
+    let mode = Select::with_theme(&theme)
+        .with_prompt("Summarize mode")
+        .items(&["Summarize a single PCAP file", "Summarize all PCAP files in a directory"])
+        .default(0)
+        .interact()?;
+
+    if mode == 0 {
+        let file: String = Input::with_theme(&theme)
+            .with_prompt("Path to PCAP file")
+            .interact_text()?;
+        if !std::path::Path::new(&file).exists() {
+            anyhow::bail!("File not found: {}", file);
+        }
+        println!();
+        commands::summary::run_single(&file)
+    } else {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("Directory containing PCAP files")
+            .interact_text()?;
+        if !std::path::Path::new(&input).exists() {
+            anyhow::bail!("Directory not found: {}", input);
+        }
+        println!();
+        commands::summary::run(&input)
+    }
+}
+
+/// Interactive conversations prompts
+fn interactive_conversations() -> Result<()> {
+    let theme = ColorfulTheme::default();
+
+    let file: String = Input::with_theme(&theme)
+        .with_prompt("Path to PCAP file")
+        .interact_text()?;
+
+    if !std::path::Path::new(&file).exists() {
+        anyhow::bail!("File not found: {}", file);
+    }
+
+    println!();
+
+    let conversations = commands::conversations::run(&file)?;
+
+    if conversations.is_empty() {
+        return Ok(());
+    }
+
+    let export = Confirm::with_theme(&theme)
+        .with_prompt("Export a conversation to a separate PCAP?")
+        .default(false)
+        .interact()?;
+
+    if export {
+        let index: usize = Input::with_theme(&theme)
+            .with_prompt(format!("Conversation number to export (1-{})", conversations.len()))
+            .interact_text()?;
+
+        let output: String = Input::with_theme(&theme)
+            .with_prompt("Output directory")
+            .default(
+                std::path::Path::new(&file)
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .to_string_lossy()
+                    .to_string(),
+            )
+            .interact_text()?;
+
+        println!();
+        commands::conversations::run_export(&file, index, Some(output.as_str()))?;
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -482,6 +606,22 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Serve { port }) => {
             web::serve(port).await?;
+        }
+        Some(Commands::Summary { file, input }) => {
+            if let Some(file) = file {
+                commands::summary::run_single(&file)?;
+            } else if let Some(input) = input {
+                commands::summary::run(&input)?;
+            } else {
+                anyhow::bail!("Either --file or --input must be provided");
+            }
+        }
+        Some(Commands::Conversations { file, export, output }) => {
+            if let Some(index) = export {
+                commands::conversations::run_export(&file, index, output.as_deref())?;
+            } else {
+                commands::conversations::run(&file)?;
+            }
         }
         None => {
             if cli.cli {

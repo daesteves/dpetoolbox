@@ -31,12 +31,17 @@ pub fn create_routes() -> Router<AppState> {
         .route("/api/convert", post(start_convert))
         .route("/api/tcpping", post(start_tcpping))
         .route("/api/tcpping/{id}/stop", post(stop_tcpping))
+        .route("/api/summary", post(start_summary))
+        .route("/api/conversations", post(start_conversations))
+        .route("/api/conversations/export", post(start_conversations_export))
         // htmx partials
         .route("/partials/download-form", get(download_form))
         .route("/partials/merge-form", get(merge_form))
         .route("/partials/filter-form", get(filter_form))
         .route("/partials/convert-form", get(convert_form))
         .route("/partials/tcpping-form", get(tcpping_form))
+        .route("/partials/summary-form", get(summary_form))
+        .route("/partials/conversations-form", get(conversations_form))
         .route("/partials/jobs", get(jobs_partial))
         .route("/partials/job/{id}", get(job_partial))
 }
@@ -252,6 +257,97 @@ async fn stop_tcpping(
         job.message = "Stopped by user".to_string();
     });
     StatusCode::OK
+}
+
+#[derive(Deserialize)]
+pub struct SummaryForm {
+    single_file: Option<String>,
+    input: Option<String>,
+}
+
+async fn start_summary(
+    State(state): State<AppState>,
+    Form(form): Form<SummaryForm>,
+) -> Html<String> {
+    let job = state.create_job("summary");
+    let job_id = job.id.clone();
+
+    let state_clone = state.clone();
+    let single_file = form.single_file.clone();
+    let input = form.input.clone();
+
+    tokio::spawn(async move {
+        run_summary_job(state_clone, &job_id, single_file.as_deref(), input.as_deref()).await;
+    });
+
+    Html(job_card_html(&job))
+}
+
+#[derive(Deserialize)]
+pub struct ConversationsForm {
+    file: String,
+    filter_ip_a: Option<String>,
+    filter_ip_b: Option<String>,
+    filter_port: Option<String>,
+    export: Option<String>,
+    output: Option<String>,
+}
+
+async fn start_conversations(
+    State(state): State<AppState>,
+    Form(form): Form<ConversationsForm>,
+) -> Html<String> {
+    let job = state.create_job("conversations");
+    let job_id = job.id.clone();
+
+    let state_clone = state.clone();
+    let file = form.file.clone();
+    let filter_ip_a = form.filter_ip_a.clone();
+    let filter_ip_b = form.filter_ip_b.clone();
+    let filter_port = form.filter_port.clone();
+    let export: Option<usize> = form.export
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| s.trim().parse().ok());
+    let output = form.output.clone();
+
+    tokio::spawn(async move {
+        run_conversations_job(state_clone, &job_id, &file, filter_ip_a.as_deref(), filter_ip_b.as_deref(), filter_port.as_deref(), export, output.as_deref()).await;
+    });
+
+    Html(job_card_html(&job))
+}
+
+#[derive(Deserialize)]
+pub struct ConversationsExportForm {
+    file: String,
+    index: usize,
+    output: Option<String>,
+    filter_ip_a: Option<String>,
+    filter_ip_b: Option<String>,
+    filter_port: Option<String>,
+}
+
+async fn start_conversations_export(
+    State(state): State<AppState>,
+    Form(form): Form<ConversationsExportForm>,
+) -> Html<String> {
+    let job = state.create_job("conversation-export");
+    let job_id = job.id.clone();
+
+    let state_clone = state.clone();
+    let file = form.file.clone();
+    let index = form.index;
+    let output = form.output.clone();
+    let filter_ip_a = form.filter_ip_a.clone();
+    let filter_ip_b = form.filter_ip_b.clone();
+    let filter_port = form.filter_port.clone();
+
+    tokio::spawn(async move {
+        run_conversations_job(state_clone, &job_id, &file, filter_ip_a.as_deref(), filter_ip_b.as_deref(), filter_port.as_deref(), Some(index), output.as_deref()).await;
+    });
+
+    Html(job_card_html(&job))
 }
 
 // ============================================================================
@@ -1269,6 +1365,286 @@ async fn run_tcpping_job(state: AppState, job_id: &str, target: &str, port: u16,
     }
 }
 
+async fn run_summary_job(state: AppState, job_id: &str, single_file: Option<&str>, input: Option<&str>) {
+    use crate::utils::tools::{ensure_capinfos, ensure_tshark};
+
+    state.update_job(job_id, |job| {
+        job.status = JobStatus::Running;
+        job.message = "Initializing summary...".to_string();
+        job.output.push("Checking for capinfos and tshark...".to_string());
+    });
+
+    let capinfos = match ensure_capinfos() {
+        Ok(path) => path,
+        Err(e) => {
+            state.update_job(job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.message = format!("capinfos not available: {}", e);
+                job.output.push(format!("ERROR: {}", e));
+            });
+            return;
+        }
+    };
+
+    let tshark = match ensure_tshark() {
+        Ok(path) => path,
+        Err(e) => {
+            state.update_job(job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.message = format!("tshark not available: {}", e);
+                job.output.push(format!("ERROR: {}", e));
+            });
+            return;
+        }
+    };
+
+    // Collect files to summarize
+    let pcap_files: Vec<std::path::PathBuf> = if let Some(sf) = single_file.filter(|s| !s.trim().is_empty()) {
+        let p = std::path::PathBuf::from(sf);
+        if !p.exists() {
+            state.update_job(job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.message = format!("File not found: {}", sf);
+            });
+            return;
+        }
+        vec![p]
+    } else if let Some(dir) = input.filter(|s| !s.trim().is_empty()) {
+        let dir_path = std::path::Path::new(dir);
+        if !dir_path.exists() {
+            state.update_job(job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.message = format!("Directory not found: {}", dir);
+            });
+            return;
+        }
+        match std::fs::read_dir(dir_path) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|ext| ext.to_string_lossy().to_lowercase() == "pcap").unwrap_or(false))
+                .collect(),
+            Err(e) => {
+                state.update_job(job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.message = format!("Failed to read directory: {}", e);
+                });
+                return;
+            }
+        }
+    } else {
+        state.update_job(job_id, |job| {
+            job.status = JobStatus::Failed;
+            job.message = "No file or directory specified".to_string();
+        });
+        return;
+    };
+
+    if pcap_files.is_empty() {
+        state.update_job(job_id, |job| {
+            job.status = JobStatus::Completed;
+            job.progress = 100;
+            job.message = "No PCAP files found".to_string();
+        });
+        return;
+    }
+
+    let total = pcap_files.len();
+    state.update_job(job_id, |job| {
+        job.message = format!("Summarizing {} file(s)...", total);
+    });
+
+    for (i, pcap) in pcap_files.iter().enumerate() {
+        state.update_job(job_id, |job| {
+            job.progress = ((i * 100) / total) as u32;
+        });
+
+        match crate::commands::summary::get_summary_lines(&capinfos, &tshark, pcap) {
+            Ok(lines) => {
+                state.update_job(job_id, |job| {
+                    for line in lines {
+                        job.output.push(line);
+                    }
+                    job.output.push("─".repeat(40));
+                });
+            }
+            Err(e) => {
+                let fname = pcap.file_name().unwrap_or_default().to_string_lossy().to_string();
+                state.update_job(job_id, |job| {
+                    job.output.push(format!("ERROR summarizing {}: {}", fname, e));
+                });
+            }
+        }
+    }
+
+    state.update_job(job_id, |job| {
+        job.progress = 100;
+        job.status = JobStatus::Completed;
+        job.message = format!("Summarized {} file(s)", total);
+    });
+}
+
+async fn run_conversations_job(state: AppState, job_id: &str, file: &str, filter_ip_a: Option<&str>, filter_ip_b: Option<&str>, filter_port: Option<&str>, export_index: Option<usize>, output_dir: Option<&str>) {
+    use crate::commands::conversations;
+
+    let ip_a = filter_ip_a.filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string());
+    let ip_b = filter_ip_b.filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string());
+    let port_filter: Option<u16> = filter_port
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| s.trim().parse().ok());
+    let has_filters = ip_a.is_some() || ip_b.is_some() || port_filter.is_some();
+
+    state.update_job(job_id, |job| {
+        job.status = JobStatus::Running;
+        job.message = "Analyzing conversations...".to_string();
+        job.output.push(format!("Analyzing: {}", file));
+        if has_filters {
+            let mut parts = Vec::new();
+            if let Some(ref ip) = ip_a { parts.push(format!("IP: {}", ip)); }
+            if let Some(ref ip) = ip_b { parts.push(format!("IP: {}", ip)); }
+            if let Some(p) = port_filter { parts.push(format!("Port: {}", p)); }
+            job.output.push(format!("Filters: {}", parts.join(", ")));
+        }
+    });
+
+    let pcap_path = std::path::Path::new(file);
+    if !pcap_path.exists() {
+        state.update_job(job_id, |job| {
+            job.status = JobStatus::Failed;
+            job.message = format!("File not found: {}", file);
+        });
+        return;
+    }
+
+    let convs = match conversations::list_conversations(pcap_path) {
+        Ok(c) => c,
+        Err(e) => {
+            state.update_job(job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.message = format!("Analysis failed: {}", e);
+                job.output.push(format!("ERROR: {}", e));
+            });
+            return;
+        }
+    };
+
+    // Apply filters
+    let filtered: Vec<_> = convs.iter().filter(|c| {
+        let match_a = ip_a.as_ref().map_or(true, |ip| c.addr_a == *ip || c.addr_b == *ip);
+        let match_b = ip_b.as_ref().map_or(true, |ip| c.addr_a == *ip || c.addr_b == *ip);
+        let match_port = port_filter.map_or(true, |p| {
+            let ps = p.to_string();
+            c.port_a == ps || c.port_b == ps
+        });
+        match_a && match_b && match_port
+    }).collect();
+
+    if filtered.is_empty() {
+        state.update_job(job_id, |job| {
+            job.progress = 100;
+            job.status = JobStatus::Completed;
+            let msg = if has_filters {
+                format!("No conversations found matching filters (total: {})", convs.len())
+            } else {
+                "No conversations found".to_string()
+            };
+            job.message = msg.clone();
+            job.output.push(msg);
+        });
+        return;
+    }
+
+    // List conversations
+    state.update_job(job_id, |job| {
+        let msg = if has_filters {
+            format!("Found {} conversation(s) matching filters (total: {})", filtered.len(), convs.len())
+        } else {
+            format!("Found {} conversation(s)", filtered.len())
+        };
+        job.output.push(msg);
+        job.output.push("─".repeat(40));
+        job.output.push(format!("{:<5} {:<8} {:<45} {:>8} {:>12} {:>10}",
+            "#", "Proto", "Conversation", "Packets", "Bytes", "Duration"));
+        job.output.push("─".repeat(90));
+
+        for (i, conv) in filtered.iter().enumerate() {
+            let src = if conv.port_a.is_empty() { conv.addr_a.clone() } else { format!("{}:{}", conv.addr_a, conv.port_a) };
+            let dst = if conv.port_b.is_empty() { conv.addr_b.clone() } else { format!("{}:{}", conv.addr_b, conv.port_b) };
+            let label = format!("{} <-> {}", src, dst);
+            job.output.push(format!("{:<5} {:<8} {:<45} {:>8} {:>12} {:>10}s",
+                i + 1, conv.protocol, label, conv.packets_total, conv.bytes_total, conv.duration));
+        }
+        job.output.push("─".repeat(90));
+    });
+
+    // Export if requested
+    if let Some(index) = export_index {
+        if index == 0 || index > filtered.len() {
+            state.update_job(job_id, |job| {
+                job.progress = 100;
+                job.status = JobStatus::Failed;
+                job.message = format!("Invalid conversation # {}. Valid range: 1-{}", index, filtered.len());
+            });
+            return;
+        }
+
+        let conv = filtered[index - 1];
+        let out_dir = match output_dir {
+            Some(o) if !o.trim().is_empty() => std::path::PathBuf::from(o),
+            _ => pcap_path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+        };
+
+        if !out_dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(&out_dir) {
+                state.update_job(job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.message = format!("Failed to create output directory: {}", e);
+                });
+                return;
+            }
+        }
+
+        let filename = format!(
+            "{}_{}_{}_flow.pcap",
+            pcap_path.file_stem().unwrap_or_default().to_string_lossy(),
+            conv.protocol.to_lowercase(),
+            index
+        );
+        let output_path = out_dir.join(&filename);
+
+        state.update_job(job_id, |job| {
+            job.output.push(format!("Exporting #{}: {}", index, conv.label()));
+            job.output.push(format!("Filter: {}", conv.to_display_filter()));
+        });
+
+        match conversations::export_conversation(pcap_path, conv, &output_path) {
+            Ok(()) => {
+                let size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+                state.update_job(job_id, |job| {
+                    job.progress = 100;
+                    job.status = JobStatus::Completed;
+                    job.message = format!("Listed {} conversation(s), exported #{} to {}", filtered.len(), index, filename);
+                    job.output.push(format!("Saved: {} ({} bytes)", output_path.display(), size));
+                });
+            }
+            Err(e) => {
+                state.update_job(job_id, |job| {
+                    job.progress = 100;
+                    job.status = JobStatus::Failed;
+                    job.message = format!("Export failed: {}", e);
+                    job.output.push(format!("ERROR: {}", e));
+                });
+            }
+        }
+    } else {
+        state.update_job(job_id, |job| {
+            job.progress = 100;
+            job.status = JobStatus::Completed;
+            job.message = format!("Found {} conversation(s)", filtered.len());
+        });
+    }
+}
+
 // ============================================================================
 // HTML Partials
 // ============================================================================
@@ -1291,6 +1667,14 @@ async fn convert_form() -> Html<&'static str> {
 
 async fn tcpping_form() -> Html<&'static str> {
     Html(TCPPING_FORM_HTML)
+}
+
+async fn summary_form() -> Html<&'static str> {
+    Html(SUMMARY_FORM_HTML)
+}
+
+async fn conversations_form() -> Html<&'static str> {
+    Html(CONVERSATIONS_FORM_HTML)
 }
 
 async fn jobs_partial(State(state): State<AppState>) -> Html<String> {
@@ -1338,9 +1722,29 @@ fn job_card_html(job: &super::state::Job) -> String {
         let lines: String = job.output.iter()
             .map(|l| format!("<div class=\"py-0.5\">{}</div>", html_escape(l)))
             .collect();
-        // Add script to auto-scroll to bottom after htmx swap
+        // Store raw text in a hidden element for copy/download
+        let raw_text: String = job.output.iter()
+            .map(|l| html_escape(l))
+            .collect::<Vec<_>>()
+            .join("\n");
         format!(r##"<div class="mt-2 bg-gray-900 text-green-400 p-2 rounded text-xs font-mono max-h-48 overflow-y-auto job-output" id="output-{id}">{lines}</div>
-        <script>document.getElementById('output-{id}').scrollTop = document.getElementById('output-{id}').scrollHeight;</script>"##, id = job.id, lines = lines)
+        <pre class="hidden" id="raw-{id}">{raw_text}</pre>
+        <script>document.getElementById('output-{id}').scrollTop = document.getElementById('output-{id}').scrollHeight;</script>"##, id = job.id, lines = lines, raw_text = raw_text)
+    } else {
+        String::new()
+    };
+
+    let export_buttons = if !job.output.is_empty() && (job.status == JobStatus::Completed || job.status == JobStatus::Failed) {
+        format!(r##"<div class="mt-2 flex gap-3">
+            <button onclick="copyJobOutput('{id}')" class="text-xs text-gray-500 dark:text-gray-400 hover:text-cyan-600 dark:hover:text-cyan-400 flex items-center gap-1" title="Copy to clipboard">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                Copy
+            </button>
+            <button onclick="downloadJobOutput('{id}', '{job_type}')" class="text-xs text-gray-500 dark:text-gray-400 hover:text-cyan-600 dark:hover:text-cyan-400 flex items-center gap-1" title="Download as .txt">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                Save .txt
+            </button>
+        </div>"##, id = job.id, job_type = job.job_type)
     } else {
         String::new()
     };
@@ -1370,6 +1774,7 @@ fn job_card_html(job: &super::state::Job) -> String {
             <p class="text-sm text-gray-600 dark:text-gray-300 mt-2">{message}</p>
             {output_html}
             {stop_button}
+            {export_buttons}
         </div>"##,
         id = job.id,
         job_type = job.job_type,
@@ -1379,6 +1784,7 @@ fn job_card_html(job: &super::state::Job) -> String {
         message = html_escape(&job.message),
         output_html = output_html,
         stop_button = stop_button,
+        export_buttons = export_buttons,
         poll_attr = poll_attr,
         border_color = match job.status {
             JobStatus::Pending => "border-gray-300 dark:border-gray-600",
@@ -1420,7 +1826,51 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
         .job-output { scroll-behavior: smooth; }
         /* Prevent layout shift during swap */
         [hx-swap-oob] { display: contents; }
+        /* Dropdown menu */
+        .dropdown { position: relative; display: inline-block; }
+        .dropdown-menu {
+            display: none;
+            position: absolute;
+            left: 0;
+            top: 100%;
+            z-index: 50;
+            min-width: 200px;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+            overflow: hidden;
+        }
+        .dropdown:hover .dropdown-menu,
+        .dropdown:focus-within .dropdown-menu {
+            display: block;
+        }
     </style>
+    <script>
+        function copyJobOutput(id) {
+            const el = document.getElementById('raw-' + id);
+            if (!el) return;
+            const text = el.textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = event.currentTarget;
+                const orig = btn.innerHTML;
+                btn.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Copied!';
+                setTimeout(() => { btn.innerHTML = orig; }, 1500);
+            });
+        }
+        function downloadJobOutput(id, jobType) {
+            const el = document.getElementById('raw-' + id);
+            if (!el) return;
+            const text = el.textContent;
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = jobType + '_' + id.substring(0, 8) + '.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    </script>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 min-h-screen transition-colors">
     <div class="container mx-auto px-2 sm:px-4 py-4 sm:py-8 max-w-4xl">
@@ -1439,18 +1889,33 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                         class="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-gray-50 dark:hover:bg-gray-700 border-b-2 border-transparent hover:border-cyan-600">
                     Download
                 </button>
-                <button hx-get="/partials/merge-form" hx-target="#form-container" hx-swap="innerHTML"
-                        class="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-gray-50 dark:hover:bg-gray-700 border-b-2 border-transparent hover:border-cyan-600">
-                    PCAP Merge
-                </button>
-                <button hx-get="/partials/filter-form" hx-target="#form-container" hx-swap="innerHTML"
-                        class="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-gray-50 dark:hover:bg-gray-700 border-b-2 border-transparent hover:border-cyan-600">
-                    PCAP Filter
-                </button>
-                <button hx-get="/partials/convert-form" hx-target="#form-container" hx-swap="innerHTML"
-                        class="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-gray-50 dark:hover:bg-gray-700 border-b-2 border-transparent hover:border-cyan-600">
-                    ETL → PCAP
-                </button>
+                <div class="dropdown">
+                    <button class="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-gray-50 dark:hover:bg-gray-700 border-b-2 border-transparent hover:border-cyan-600">
+                        PCAP Tools ▾
+                    </button>
+                    <div class="dropdown-menu bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                        <button hx-get="/partials/merge-form" hx-target="#form-container" hx-swap="innerHTML"
+                                class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
+                            Merge
+                        </button>
+                        <button hx-get="/partials/filter-form" hx-target="#form-container" hx-swap="innerHTML"
+                                class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
+                            Filter
+                        </button>
+                        <button hx-get="/partials/summary-form" hx-target="#form-container" hx-swap="innerHTML"
+                                class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
+                            Summary
+                        </button>
+                        <button hx-get="/partials/conversations-form" hx-target="#form-container" hx-swap="innerHTML"
+                                class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
+                            Conversations
+                        </button>
+                        <button hx-get="/partials/convert-form" hx-target="#form-container" hx-swap="innerHTML"
+                                class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
+                            ETL → PCAP
+                        </button>
+                    </div>
+                </div>
                 <button hx-get="/partials/tcpping-form" hx-target="#form-container" hx-swap="innerHTML"
                         class="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-gray-50 dark:hover:bg-gray-700 border-b-2 border-transparent hover:border-cyan-600">
                     TCP Ping
@@ -1485,9 +1950,19 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                             <p class="text-sm text-gray-600 dark:text-gray-400">Convert Windows ETL traces to PCAP format</p>
                         </div>
                         <div hx-get="/partials/tcpping-form" hx-target="#form-container" hx-swap="innerHTML"
-                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors sm:col-span-2 sm:max-w-xs sm:mx-auto">
+                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
                             <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">🌐 TCP Ping</h4>
                             <p class="text-sm text-gray-600 dark:text-gray-400">Test TCP connectivity to hosts and ports</p>
+                        </div>
+                        <div hx-get="/partials/summary-form" hx-target="#form-container" hx-swap="innerHTML"
+                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                            <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">📊 PCAP Summary</h4>
+                            <p class="text-sm text-gray-600 dark:text-gray-400">View file statistics and protocol hierarchy</p>
+                        </div>
+                        <div hx-get="/partials/conversations-form" hx-target="#form-container" hx-swap="innerHTML"
+                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                            <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">💬 Conversations</h4>
+                            <p class="text-sm text-gray-600 dark:text-gray-400">List and export network flows from PCAPs</p>
                         </div>
                     </div>
                     
@@ -1737,6 +2212,109 @@ const TCPPING_FORM_HTML: &str = r##"<form hx-post="/api/tcpping" hx-target="#job
         </div>
         <button type="submit" class="w-full bg-cyan-600 text-white py-2 px-4 rounded-md hover:bg-cyan-700 transition">
             Start TCP Ping
+        </button>
+    </div>
+</form>"##;
+
+const SUMMARY_FORM_HTML: &str = r##"<form hx-post="/api/summary" hx-target="#jobs-list" hx-swap="afterbegin">
+    <h3 class="text-lg font-semibold mb-2 dark:text-white">PCAP Summary</h3>
+    <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Uses <strong>capinfos</strong> and <strong>tshark</strong> to display file statistics and protocol hierarchy for PCAP files.</p>
+    <div class="space-y-4">
+        <!-- Single file option -->
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Single PCAP File (optional)</label>
+            <input type="text" name="single_file"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                placeholder="C:\path\to\capture.pcap">
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Summarize a single PCAP file</p>
+        </div>
+        
+        <!-- Divider -->
+        <div class="relative">
+            <div class="absolute inset-0 flex items-center">
+                <div class="w-full border-t border-gray-300 dark:border-gray-600"></div>
+            </div>
+            <div class="relative flex justify-center text-sm">
+                <span class="px-2 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400">OR summarize entire directory</span>
+            </div>
+        </div>
+        
+        <!-- Directory option -->
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Input Directory</label>
+            <input type="text" name="input"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
+                placeholder="C:\PCAPs">
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Summarize all PCAP files in directory</p>
+        </div>
+
+        <div class="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-md p-3 text-sm text-blue-800 dark:text-blue-300">
+            <strong>Output includes:</strong> packet count, capture duration, file size, data rates, and protocol hierarchy breakdown.
+        </div>
+        <div class="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-md p-3 text-sm text-yellow-800 dark:text-yellow-300">
+            Requires Wireshark to be installed (provides capinfos and tshark)
+        </div>
+        <button type="submit" class="w-full bg-cyan-600 text-white py-2 px-4 rounded-md hover:bg-cyan-700 transition">
+            Run Summary
+        </button>
+    </div>
+</form>"##;
+
+const CONVERSATIONS_FORM_HTML: &str = r##"<form hx-post="/api/conversations" hx-target="#jobs-list" hx-swap="afterbegin">
+    <h3 class="text-lg font-semibold mb-2 dark:text-white">PCAP Conversations</h3>
+    <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Uses <strong>tshark</strong> to list TCP, UDP, and IP conversations in a PCAP file. Optionally filter by IP/port and export a specific flow.</p>
+    <div class="space-y-4">
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">PCAP File</label>
+            <input type="text" name="file" required
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                placeholder="C:\path\to\capture.pcap">
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IP Address (optional)</label>
+                <input type="text" name="filter_ip_a"
+                    class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                    placeholder="e.g. 10.0.0.1">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Second IP (optional)</label>
+                <input type="text" name="filter_ip_b"
+                    class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                    placeholder="e.g. 10.0.0.2">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Port (optional)</label>
+                <input type="text" name="filter_port"
+                    class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                    placeholder="e.g. 443">
+            </div>
+        </div>
+
+        <div class="border-t border-gray-200 dark:border-gray-700 pt-3">
+            <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">To export a specific conversation, list conversations first, then resubmit with the conversation number below.</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Export conversation # (optional)</label>
+                    <input type="number" name="export" min="1"
+                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                        placeholder="Leave empty to list only">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Output directory (optional)</label>
+                    <input type="text" name="output"
+                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                        placeholder="Same as input file location">
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-md p-3 text-sm text-yellow-800 dark:text-yellow-300">
+            Requires Wireshark to be installed (provides tshark)
+        </div>
+        <button type="submit" class="w-full bg-cyan-600 text-white py-2 px-4 rounded-md hover:bg-cyan-700 transition">
+            Analyze Conversations
         </button>
     </div>
 </form>"##;
