@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response, Sse},
     routing::{get, post},
@@ -7,7 +7,7 @@ use axum::{
 };
 use futures::stream::{self, Stream};
 use rust_embed::Embed;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, time::Duration};
 use tokio_stream::StreamExt;
 
@@ -35,6 +35,8 @@ pub fn create_routes() -> Router<AppState> {
         .route("/api/conversations", post(start_conversations))
         .route("/api/conversations/export", post(start_conversations_export))
         .route("/api/toptalkers", post(start_toptalkers))
+        .route("/api/pick-file", get(pick_file))
+        .route("/api/pick-dir", get(pick_dir))
         // htmx partials
         .route("/partials/download-form", get(download_form))
         .route("/partials/merge-form", get(merge_form))
@@ -62,6 +64,43 @@ async fn static_files(Path(file): Path<String>) -> impl IntoResponse {
         }
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct PickFileQuery {
+    ext: Option<String>,
+    title: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PickResult {
+    path: Option<String>,
+}
+
+async fn pick_file(Query(q): Query<PickFileQuery>) -> Json<PickResult> {
+    let result = tokio::task::spawn_blocking(move || {
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(title) = q.title.as_deref() {
+            dialog = dialog.set_title(title);
+        }
+        if let Some(ext) = q.ext.as_deref() {
+            let exts: Vec<&str> = ext.split(',').map(|e| e.trim()).collect();
+            dialog = dialog.add_filter("Files", &exts);
+        }
+        dialog.pick_file().map(|p| p.to_string_lossy().to_string())
+    }).await.unwrap_or(None);
+    Json(PickResult { path: result })
+}
+
+async fn pick_dir(Query(q): Query<PickFileQuery>) -> Json<PickResult> {
+    let result = tokio::task::spawn_blocking(move || {
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(title) = q.title.as_deref() {
+            dialog = dialog.set_title(title);
+        }
+        dialog.pick_folder().map(|p| p.to_string_lossy().to_string())
+    }).await.unwrap_or(None);
+    Json(PickResult { path: result })
 }
 
 /// Main page
@@ -1973,6 +2012,18 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
         }
+        function pickFile(inputId, ext) {
+            var params = new URLSearchParams();
+            if (ext) params.set('ext', ext);
+            fetch('/api/pick-file?' + params).then(function(r){return r.json()}).then(function(data){
+                if (data.path) { var el = document.getElementById(inputId); if (el) el.value = data.path; }
+            });
+        }
+        function pickDir(inputId) {
+            fetch('/api/pick-dir?').then(function(r){return r.json()}).then(function(data){
+                if (data.path) { var el = document.getElementById(inputId); if (el) el.value = data.path; }
+            });
+        }
     </script>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 min-h-screen transition-colors">
@@ -2051,16 +2102,6 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                             <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">🔍 PCAP Filter</h4>
                             <p class="text-sm text-gray-600 dark:text-gray-400">Apply Wireshark display filters to extract packets</p>
                         </div>
-                        <div hx-get="/partials/convert-form" hx-target="#form-container" hx-swap="innerHTML"
-                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
-                            <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">🔄 ETL → PCAP</h4>
-                            <p class="text-sm text-gray-600 dark:text-gray-400">Convert Windows ETL traces to PCAP format</p>
-                        </div>
-                        <div hx-get="/partials/tcpping-form" hx-target="#form-container" hx-swap="innerHTML"
-                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
-                            <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">🌐 TCP Ping</h4>
-                            <p class="text-sm text-gray-600 dark:text-gray-400">Test TCP connectivity to hosts and ports</p>
-                        </div>
                         <div hx-get="/partials/summary-form" hx-target="#form-container" hx-swap="innerHTML"
                              class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
                             <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">📊 PCAP Summary</h4>
@@ -2075,6 +2116,16 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                              class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
                             <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">📈 Top Talkers</h4>
                             <p class="text-sm text-gray-600 dark:text-gray-400">Show endpoints ranked by traffic volume</p>
+                        </div>
+                        <div hx-get="/partials/convert-form" hx-target="#form-container" hx-swap="innerHTML"
+                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                            <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">🔄 ETL → PCAP</h4>
+                            <p class="text-sm text-gray-600 dark:text-gray-400">Convert Windows ETL traces to PCAP format</p>
+                        </div>
+                        <div hx-get="/partials/tcpping-form" hx-target="#form-container" hx-swap="innerHTML"
+                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                            <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">🌐 TCP Ping</h4>
+                            <p class="text-sm text-gray-600 dark:text-gray-400">Test TCP connectivity to hosts and ports</p>
                         </div>
                     </div>
                     
@@ -2109,9 +2160,12 @@ const DOWNLOAD_FORM_HTML: &str = r##"<form hx-post="/api/download" hx-target="#j
         <!-- Option 1: File path -->
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">URL List File (optional)</label>
-            <input type="text" name="file_path" 
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+            <div class="flex gap-2">
+            <input type="text" name="file_path" id="dl-file"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
                 placeholder="C:\path\to\urls.txt">
+            <button type="button" onclick="pickFile('dl-file','txt')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Path to a .txt file containing URLs (one per line)</p>
         </div>
         
@@ -2136,9 +2190,12 @@ const DOWNLOAD_FORM_HTML: &str = r##"<form hx-post="/api/download" hx-target="#j
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Output Directory (optional)</label>
-                <input type="text" name="output" 
-                    class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                <div class="flex gap-2">
+                <input type="text" name="output" id="dl-output"
+                    class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
                     placeholder="C:\Downloads">
+                <button type="button" onclick="pickDir('dl-output')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+                </div>
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Parallel Downloads</label>
@@ -2161,15 +2218,21 @@ const MERGE_FORM_HTML: &str = r##"<form hx-post="/api/merge" hx-target="#jobs-li
     <div class="space-y-4">
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Input Directory</label>
-            <input type="text" name="input" required
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
+            <div class="flex gap-2">
+            <input type="text" name="input" required id="merge-input"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
                 placeholder="C:\PCAPs">
+            <button type="button" onclick="pickDir('merge-input')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
         </div>
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Output Directory (optional)</label>
-            <input type="text" name="output"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
+            <div class="flex gap-2">
+            <input type="text" name="output" id="merge-output"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
                 placeholder="Same as input">
+            <button type="button" onclick="pickDir('merge-output')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">If not specified, merged files are saved to the input directory</p>
         </div>
         <div class="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-md p-3 text-sm text-blue-800 dark:text-blue-300">
@@ -2191,9 +2254,12 @@ const FILTER_FORM_HTML: &str = r##"<form hx-post="/api/filter" hx-target="#jobs-
         <!-- Single file option -->
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Single PCAP File (optional)</label>
-            <input type="text" name="single_file"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+            <div class="flex gap-2">
+            <input type="text" name="single_file" id="filter-single"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
                 placeholder="C:\path\to\capture.pcap">
+            <button type="button" onclick="pickFile('filter-single','pcap')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Filter a single PCAP file</p>
         </div>
         
@@ -2210,9 +2276,12 @@ const FILTER_FORM_HTML: &str = r##"<form hx-post="/api/filter" hx-target="#jobs-
         <!-- Directory option -->
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Input Directory</label>
-            <input type="text" name="input"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
+            <div class="flex gap-2">
+            <input type="text" name="input" id="filter-input"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
                 placeholder="C:\PCAPs">
+            <button type="button" onclick="pickDir('filter-input')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Filter all PCAP files in directory</p>
         </div>
         
@@ -2224,9 +2293,12 @@ const FILTER_FORM_HTML: &str = r##"<form hx-post="/api/filter" hx-target="#jobs-
         </div>
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Output Directory (optional)</label>
-            <input type="text" name="output"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
+            <div class="flex gap-2">
+            <input type="text" name="output" id="filter-output"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
                 placeholder="Same as input">
+            <button type="button" onclick="pickDir('filter-output')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">If not specified, filtered files (_filtered.pcap) are saved alongside the input</p>
         </div>
         <div class="flex items-center">
@@ -2252,9 +2324,12 @@ const CONVERT_FORM_HTML: &str = r##"<form hx-post="/api/convert" hx-target="#job
         <!-- Single file option -->
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Single ETL File (optional)</label>
-            <input type="text" name="single_file" 
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+            <div class="flex gap-2">
+            <input type="text" name="single_file" id="convert-single"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
                 placeholder="C:\path\to\file.etl">
+            <button type="button" onclick="pickFile('convert-single','etl')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Convert a single ETL file</p>
         </div>
         
@@ -2271,17 +2346,23 @@ const CONVERT_FORM_HTML: &str = r##"<form hx-post="/api/convert" hx-target="#job
         <!-- Directory option -->
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Input Directory (ETL files)</label>
-            <input type="text" name="input" 
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
+            <div class="flex gap-2">
+            <input type="text" name="input" id="convert-input"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
                 placeholder="C:\ETLs">
+            <button type="button" onclick="pickDir('convert-input')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Convert all ETL files in directory</p>
         </div>
         
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Output Directory (optional)</label>
-            <input type="text" name="output"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
+            <div class="flex gap-2">
+            <input type="text" name="output" id="convert-output"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
                 placeholder="Same as input">
+            <button type="button" onclick="pickDir('convert-output')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">If not specified, PCAP files are saved to the same location as source</p>
         </div>
         <div class="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-md p-3 text-sm text-blue-800 dark:text-blue-300">
@@ -2335,9 +2416,12 @@ const SUMMARY_FORM_HTML: &str = r##"<form hx-post="/api/summary" hx-target="#job
         <!-- Single file option -->
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Single PCAP File (optional)</label>
-            <input type="text" name="single_file"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+            <div class="flex gap-2">
+            <input type="text" name="single_file" id="summary-single"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
                 placeholder="C:\path\to\capture.pcap">
+            <button type="button" onclick="pickFile('summary-single','pcap')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Summarize a single PCAP file</p>
         </div>
         
@@ -2354,9 +2438,12 @@ const SUMMARY_FORM_HTML: &str = r##"<form hx-post="/api/summary" hx-target="#job
         <!-- Directory option -->
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Input Directory</label>
-            <input type="text" name="input"
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
+            <div class="flex gap-2">
+            <input type="text" name="input" id="summary-input"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white"
                 placeholder="C:\PCAPs">
+            <button type="button" onclick="pickDir('summary-input')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Summarize all PCAP files in directory</p>
         </div>
 
@@ -2378,9 +2465,12 @@ const CONVERSATIONS_FORM_HTML: &str = r##"<form hx-post="/api/conversations" hx-
     <div class="space-y-4">
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">PCAP File</label>
-            <input type="text" name="file" required
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+            <div class="flex gap-2">
+            <input type="text" name="file" required id="conv-file"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
                 placeholder="C:\path\to\capture.pcap">
+            <button type="button" onclick="pickFile('conv-file','pcap')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
         </div>
 
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -2415,9 +2505,12 @@ const CONVERSATIONS_FORM_HTML: &str = r##"<form hx-post="/api/conversations" hx-
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Output directory (optional)</label>
-                    <input type="text" name="output"
-                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                    <div class="flex gap-2">
+                    <input type="text" name="output" id="conv-output"
+                        class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
                         placeholder="Same as input file location">
+                    <button type="button" onclick="pickDir('conv-output')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2437,9 +2530,12 @@ const TOPTALKERS_FORM_HTML: &str = r##"<form hx-post="/api/toptalkers" hx-target
     <div class="space-y-4">
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">PCAP File</label>
-            <input type="text" name="file" required
-                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+            <div class="flex gap-2">
+            <input type="text" name="file" required id="tt-file"
+                class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
                 placeholder="C:\path\to\capture.pcap">
+            <button type="button" onclick="pickFile('tt-file','pcap')" class="px-3 py-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 text-sm whitespace-nowrap">Browse</button>
+            </div>
         </div>
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Number of top talkers</label>
