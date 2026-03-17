@@ -52,11 +52,6 @@ fn extract_filename(url: &str) -> String {
     filename.replace("%2F", "_")
 }
 
-/// Check if file already exists
-fn file_exists(output_dir: &Path, filename: &str) -> bool {
-    output_dir.join(filename).exists()
-}
-
 /// Download a single file using azcopy
 async fn download_file(
     azcopy_path: &Path,

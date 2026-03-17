@@ -643,7 +643,7 @@ async fn main() -> Result<()> {
                 std::fs::write(&temp_file, &text)?;
                 
                 let result = commands::download::run(
-                    temp_file.to_str().unwrap(),
+                    &temp_file.to_string_lossy(),
                     output.as_deref(),
                     threads
                 ).await;

@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
-    response::{Html, IntoResponse, Response, Sse},
+    response::{Html, IntoResponse, Sse},
     routing::{get, post},
     Form, Json, Router,
 };
@@ -9,13 +9,18 @@ use futures::stream::{self, Stream};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, time::Duration};
-use tokio_stream::StreamExt;
 
 use super::state::{AppState, JobStatus};
 
 #[derive(Embed)]
 #[folder = "static/"]
 struct StaticFiles;
+
+static IP_PCAP_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"_(\d{1,3}(?:\.\d{1,3}){3})\.pcap$").unwrap());
+
+static PACKET_COUNT_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"Number of packets:\s+(\d+)").unwrap());
 
 /// Create all routes
 pub fn create_routes() -> Router<AppState> {
@@ -132,15 +137,16 @@ async fn job_stream(
         tokio::time::sleep(Duration::from_millis(500)).await;
         
         let job = state.get_job(&id)?;
+        let is_done = job.status == JobStatus::Completed || job.status == JobStatus::Failed;
         let data = serde_json::to_string(&job).ok()?;
         let event = axum::response::sse::Event::default().data(data);
         
-        // Stop streaming if job is complete
-        if job.status == JobStatus::Completed || job.status == JobStatus::Failed {
-            return None;
+        if is_done {
+            // Send the final event but stop streaming after
+            Some((Ok(event), (state, "".to_string())))
+        } else {
+            Some((Ok(event), (state, id)))
         }
-        
-        Some((Ok(event), (state, id)))
     });
 
     Sse::new(stream).keep_alive(
@@ -644,7 +650,7 @@ async fn run_download_job(state: AppState, job_id: &str, urls: Option<&str>, fil
 
         let handle = tokio::spawn(async move {
             // Acquire semaphore permit to limit concurrency
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem.acquire().await.expect("download semaphore closed unexpectedly");
 
             // Extract filename from URL
             let filename = url.split('/').last().unwrap_or("file")
@@ -731,7 +737,6 @@ async fn run_download_job(state: AppState, job_id: &str, urls: Option<&str>, fil
 
 async fn run_merge_job(state: AppState, job_id: &str, input: &str, output: Option<&str>) {
     use crate::utils::tools::ensure_mergecap;
-    use regex::Regex;
     use std::collections::HashMap;
     
     state.update_job(job_id, |job| {
@@ -816,13 +821,12 @@ async fn run_merge_job(state: AppState, job_id: &str, input: &str, output: Optio
     }
 
     // Try to group files by IP address (pattern: _X.X.X.X.pcap)
-    let ip_regex = Regex::new(r"_(\d{1,3}(?:\.\d{1,3}){3})\.pcap$").unwrap();
     let mut grouped: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
 
     for path in &pcap_files {
         if let Some(filename) = path.file_name() {
             let filename_str = filename.to_string_lossy();
-            if let Some(caps) = ip_regex.captures(&filename_str) {
+            if let Some(caps) = IP_PCAP_REGEX.captures(&filename_str) {
                 let ip = caps[1].to_string();
                 grouped.entry(ip).or_default().push(path.clone());
             }
@@ -960,7 +964,6 @@ async fn run_merge_job(state: AppState, job_id: &str, input: &str, output: Optio
 
 async fn run_filter_job(state: AppState, job_id: &str, input: Option<&str>, single_file: Option<&str>, output: Option<&str>, filter: &str, delete_empty: bool) {
     use crate::utils::tools::{ensure_tshark, ensure_capinfos};
-    use regex::Regex;
     
     state.update_job(job_id, |job| {
         job.status = JobStatus::Running;
@@ -1140,8 +1143,7 @@ async fn run_filter_job(state: AppState, job_id: &str, input: Option<&str>, sing
                         
                         if let Ok(out) = capinfos_output {
                             let out_str = String::from_utf8_lossy(&out.stdout);
-                            let re = Regex::new(r"Number of packets:\s+(\d+)").unwrap();
-                            re.captures(&out_str)
+                            PACKET_COUNT_REGEX.captures(&out_str)
                                 .and_then(|c| c.get(1))
                                 .and_then(|m| m.as_str().parse::<u64>().ok())
                                 .unwrap_or(0)

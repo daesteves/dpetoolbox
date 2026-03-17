@@ -109,7 +109,7 @@ pub fn calculate(ip: &str, cidr: u8) -> Result<SubnetInfo> {
     let network = ip_num & mask;
     let broadcast = network | wildcard;
 
-    let total_hosts = 1u64 << (32 - cidr);
+    let total_hosts: u64 = if cidr == 0 { 1u64 << 32 } else { 1u64 << (32 - cidr) };
     let (usable_hosts, first_host, last_host) = if cidr == 32 {
         (1u64, network, network)
     } else if cidr == 31 {
