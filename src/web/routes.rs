@@ -35,6 +35,7 @@ pub fn create_routes() -> Router<AppState> {
         .route("/api/conversations", post(start_conversations))
         .route("/api/conversations/export", post(start_conversations_export))
         .route("/api/toptalkers", post(start_toptalkers))
+        .route("/api/subnet", post(start_subnet))
         .route("/api/pick-file", get(pick_file))
         .route("/api/pick-dir", get(pick_dir))
         // htmx partials
@@ -46,6 +47,7 @@ pub fn create_routes() -> Router<AppState> {
         .route("/partials/summary-form", get(summary_form))
         .route("/partials/conversations-form", get(conversations_form))
         .route("/partials/toptalkers-form", get(toptalkers_form))
+        .route("/partials/subnet-form", get(subnet_form))
         .route("/partials/jobs", get(jobs_partial))
         .route("/partials/job/{id}", get(job_partial))
 }
@@ -417,6 +419,72 @@ async fn start_toptalkers(
     });
 
     Html(job_card_html(&job))
+}
+
+#[derive(Deserialize)]
+pub struct SubnetForm {
+    cidr: String,
+}
+
+async fn start_subnet(
+    Form(form): Form<SubnetForm>,
+) -> Html<String> {
+    let cidr_input = form.cidr.trim().to_string();
+    match crate::commands::subnet::parse_cidr(&cidr_input) {
+        Ok((ip, cidr)) => {
+            match crate::commands::subnet::calculate(&ip, cidr) {
+                Ok(info) => {
+                    Html(format!(r##"<div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4 mb-3 border-l-4 border-green-500">
+                        <div class="flex justify-between items-start">
+                            <span class="font-semibold dark:text-white">Subnet Calculator</span>
+                            <span class="px-2 py-1 rounded text-xs bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200">Completed</span>
+                        </div>
+                        <p class="text-sm text-gray-600 dark:text-gray-300 mt-2">Results for {}/{}</p>
+                        <div class="mt-2 bg-gray-900 text-green-400 p-2 rounded text-xs font-mono max-h-64 overflow-y-auto">
+                            <div class="py-0.5 font-bold text-cyan-400">Network Information</div>
+                            <div class="py-0.5">  Network Address:    {}</div>
+                            <div class="py-0.5">  Broadcast Address:  {}</div>
+                            <div class="py-0.5">  Subnet Mask:        {} (/{cidr})</div>
+                            <div class="py-0.5">  Wildcard Mask:      {}</div>
+                            <div class="py-0.5"></div>
+                            <div class="py-0.5 font-bold text-cyan-400">Host Information</div>
+                            <div class="py-0.5">  Total Hosts:        {}</div>
+                            <div class="py-0.5">  Usable Hosts:       {}</div>
+                            <div class="py-0.5">  First Host:         {}</div>
+                            <div class="py-0.5">  Last Host:          {}</div>
+                            <div class="py-0.5"></div>
+                            <div class="py-0.5 font-bold text-cyan-400">Classification</div>
+                            <div class="py-0.5">  IP Class:           {}</div>
+                            <div class="py-0.5">  Type:               {}</div>
+                            <div class="py-0.5"></div>
+                            <div class="py-0.5 font-bold text-cyan-400">Binary Representation</div>
+                            <div class="py-0.5">  Network:   {}</div>
+                            <div class="py-0.5">  Mask:      {}</div>
+                            <div class="py-0.5">  Broadcast: {}</div>
+                        </div>
+                    </div>"##,
+                        info.input_ip, info.cidr,
+                        info.network, info.broadcast, info.subnet_mask,
+                        info.wildcard_mask,
+                        info.total_hosts, info.usable_hosts, info.first_host, info.last_host,
+                        info.ip_class, info.ip_type,
+                        info.binary_network, info.binary_mask, info.binary_broadcast,
+                        cidr = info.cidr,
+                    ))
+                }
+                Err(e) => Html(format!(r##"<div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4 mb-3 border-l-4 border-red-500">
+                    <span class="font-semibold dark:text-white">Subnet Calculator</span>
+                    <span class="ml-2 px-2 py-1 rounded text-xs bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200">Error</span>
+                    <p class="text-sm text-red-600 dark:text-red-300 mt-2">{}</p>
+                </div>"##, e))
+            }
+        }
+        Err(e) => Html(format!(r##"<div class="bg-white dark:bg-gray-800 rounded-lg shadow p-4 mb-3 border-l-4 border-red-500">
+            <span class="font-semibold dark:text-white">Subnet Calculator</span>
+            <span class="ml-2 px-2 py-1 rounded text-xs bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200">Error</span>
+            <p class="text-sm text-red-600 dark:text-red-300 mt-2">{}</p>
+        </div>"##, e))
+    }
 }
 
 // ============================================================================
@@ -1819,6 +1887,10 @@ async fn toptalkers_form() -> Html<&'static str> {
     Html(TOPTALKERS_FORM_HTML)
 }
 
+async fn subnet_form() -> Html<&'static str> {
+    Html(SUBNET_FORM_HTML)
+}
+
 async fn jobs_partial(State(state): State<AppState>) -> Html<String> {
     let jobs = state.get_all_jobs();
     let mut html = String::new();
@@ -1968,6 +2040,13 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
         .job-output { scroll-behavior: smooth; }
         /* Prevent layout shift during swap */
         [hx-swap-oob] { display: contents; }
+        @media (min-width: 640px) {
+            .landing-grid > :last-child:nth-child(odd) {
+                grid-column: 1 / -1;
+                max-width: 50%;
+                margin: 0 auto;
+            }
+        }
         /* Dropdown menu */
         .dropdown { position: relative; display: inline-block; }
         .dropdown-menu {
@@ -2074,10 +2153,21 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                         </button>
                     </div>
                 </div>
-                <button hx-get="/partials/tcpping-form" hx-target="#form-container" hx-swap="innerHTML"
-                        class="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-gray-50 dark:hover:bg-gray-700 border-b-2 border-transparent hover:border-cyan-600">
-                    TCP Ping
-                </button>
+                <div class="dropdown">
+                    <button class="px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-gray-50 dark:hover:bg-gray-700 border-b-2 border-transparent hover:border-cyan-600">
+                        Other Tools ▾
+                    </button>
+                    <div class="dropdown-menu bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                        <button hx-get="/partials/tcpping-form" hx-target="#form-container" hx-swap="innerHTML"
+                                class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
+                            TCP Ping
+                        </button>
+                        <button hx-get="/partials/subnet-form" hx-target="#form-container" hx-swap="innerHTML"
+                                class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
+                            Subnet Calculator
+                        </button>
+                    </div>
+                </div>
             </nav>
             
             <!-- Form Container -->
@@ -2086,7 +2176,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                 <div class="text-center space-y-4 max-w-2xl mx-auto">
                     <p class="text-gray-600 dark:text-gray-300">A tool developed to simplify common tasks in datapath analysis and diagnostics for DPEs.</p>
                     
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-6">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-6 landing-grid">
                         <div hx-get="/partials/download-form" hx-target="#form-container" hx-swap="innerHTML"
                              class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
                             <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">📥 Download</h4>
@@ -2126,6 +2216,11 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                              class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
                             <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">🌐 TCP Ping</h4>
                             <p class="text-sm text-gray-600 dark:text-gray-400">Test TCP connectivity to hosts and ports</p>
+                        </div>
+                        <div hx-get="/partials/subnet-form" hx-target="#form-container" hx-swap="innerHTML"
+                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                            <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">🧮 Subnet Calculator</h4>
+                            <p class="text-sm text-gray-600 dark:text-gray-400">Calculate network, broadcast, hosts for any subnet</p>
                         </div>
                     </div>
                     
@@ -2551,6 +2646,26 @@ const TOPTALKERS_FORM_HTML: &str = r##"<form hx-post="/api/toptalkers" hx-target
         </div>
         <button type="submit" class="w-full bg-cyan-600 text-white py-2 px-4 rounded-md hover:bg-cyan-700 transition">
             Analyze Top Talkers
+        </button>
+    </div>
+</form>"##;
+
+const SUBNET_FORM_HTML: &str = r##"<form hx-post="/api/subnet" hx-target="#jobs-list" hx-swap="afterbegin">
+    <h3 class="text-lg font-semibold mb-2 dark:text-white">IPv4 Subnet Calculator</h3>
+    <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Calculate network details, host ranges, and binary representations for any IPv4 subnet.</p>
+    <div class="space-y-4">
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IP Address (CIDR notation)</label>
+            <input type="text" name="cidr" required
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                placeholder="192.168.1.0/24">
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Enter an IP address with CIDR prefix (e.g., 10.0.0.0/8, 172.16.0.0/12, 192.168.1.0/24)</p>
+        </div>
+        <div class="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-md p-3 text-sm text-blue-800 dark:text-blue-300">
+            <strong>Output includes:</strong> network/broadcast addresses, subnet and wildcard masks, host count and range, IP class, private/public type, and binary representations.
+        </div>
+        <button type="submit" class="w-full bg-cyan-600 text-white py-2 px-4 rounded-md hover:bg-cyan-700 transition">
+            Calculate
         </button>
     </div>
 </form>"##;

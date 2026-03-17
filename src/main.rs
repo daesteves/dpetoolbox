@@ -183,6 +183,14 @@ Otherwise, all PCAP files are merged into a single merged.pcap.")]
         #[arg(short = 'n', long, default_value = "50")]
         limit: usize,
     },
+    /// IPv4 subnet calculator
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox subnet 192.168.1.0/24
+    dpetoolbox subnet 10.0.0.0/8")]
+    Subnet {
+        /// IP address in CIDR notation (e.g., 192.168.1.0/24)
+        cidr: String,
+    },
 }
 
 fn show_banner() {
@@ -207,6 +215,7 @@ const MENU_OPTIONS: &[&str] = &[
     "PCAP Summary",
     "PCAP Conversations",
     "PCAP Top Talkers",
+    "IPv4 Subnet Calculator",
     "TCP Ping",
     "Exit",
 ];
@@ -268,12 +277,18 @@ async fn interactive_mode() -> Result<()> {
                 }
             }
             7 => {
+                // IPv4 Subnet Calculator
+                if let Err(e) = interactive_subnet() {
+                    println!("{} {}", "Error:".red().bold(), e);
+                }
+            }
+            8 => {
                 // TCP Ping
                 if let Err(e) = interactive_tcpping() {
                     println!("{} {}", "Error:".red().bold(), e);
                 }
             }
-            8 => {
+            9 => {
                 // Exit
                 println!("{}", "Goodbye!".cyan());
                 break;
@@ -585,6 +600,18 @@ fn interactive_toptalkers() -> Result<()> {
     commands::toptalkers::run(&file, limit)
 }
 
+/// Interactive subnet calculator prompts
+fn interactive_subnet() -> Result<()> {
+    let theme = ColorfulTheme::default();
+
+    let cidr: String = Input::with_theme(&theme)
+        .with_prompt("IP address in CIDR notation (e.g., 192.168.1.0/24)")
+        .interact_text()?;
+
+    println!();
+    commands::subnet::run(&cidr)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Enable ANSI color support on Windows
@@ -669,6 +696,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Toptalkers { file, limit }) => {
             commands::toptalkers::run(&file, limit)?;
+        }
+        Some(Commands::Subnet { cidr }) => {
+            commands::subnet::run(&cidr)?;
         }
         None => {
             if cli.cli {
