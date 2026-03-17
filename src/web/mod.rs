@@ -44,13 +44,13 @@ pub async fn serve(port: u16) -> Result<()> {
     let url = format!("http://localhost:{}", port);
     
     println!();
-    println!("{}", "╔════════════════════════════════════════════════════════════════╗".cyan());
-    println!("{}", "║                    DPE TOOLBOX WEB UI                          ║".cyan());
-    println!("{}", "╠════════════════════════════════════════════════════════════════╣".cyan());
-    println!("{}  {}                                     {}", "║".cyan(), url, "║".cyan());
-    println!("{}", "║                                                                ║".cyan());
-    println!("{}", "║  Press Ctrl+C to stop the server                              ║".cyan());
-    println!("{}", "╚════════════════════════════════════════════════════════════════╝".cyan());
+    println!("{}", "╔══════════════════════════════════════════════╗".cyan());
+    println!("{}", "║          DPE TOOLBOX - WEB UI                ║".cyan());
+    println!("{}", "╠══════════════════════════════════════════════╣".cyan());
+    println!("{}", format!("║  {:<44}║", url).cyan());
+    println!("{}", "║                                              ║".cyan());
+    println!("{}", "║  Press Ctrl+C to stop the server             ║".cyan());
+    println!("{}", "╚══════════════════════════════════════════════╝".cyan());
     println!();
 
     // Auto-open browser

@@ -5,7 +5,7 @@ mod web;
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
-use colored::Colorize;
+use colored::{Colorize, control::set_virtual_terminal};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use std::io;
 
@@ -187,14 +187,14 @@ Otherwise, all PCAP files are merged into a single merged.pcap.")]
 
 fn show_banner() {
     println!();
-    println!("{}", "    _____  _____  ______   _______          _ _                 ".cyan());
-    println!("{}", "   |  __ \\|  __ \\|  ____| |__   __|        | | |                ".cyan());
-    println!("{}", "   | |  | | |__) | |__       | | ___   ___ | | |__   _____  __  ".cyan());
-    println!("{}", "   | |  | |  ___/|  __|      | |/ _ \\ / _ \\| | '_ \\ / _ \\ \\/ /  ".cyan());
-    println!("{}", "   | |__| | |    | |____     | | (_) | (_) | | |_) | (_) >  <   ".cyan());
-    println!("{}", "   |_____/|_|    |______|    |_|\\___/ \\___/|_|_.__/ \\___/_/\\_\\  ".cyan());
+    println!("{}", r"   _____  _____  ______   _______          _ _".cyan());
+    println!("{}", r"  |  __ \|  __ \|  ____| |__   __|        | | |".cyan());
+    println!("{}", r"  | |  | | |__) | |__       | | ___   ___ | | |__   _____  __".cyan());
+    println!("{}", r"  | |  | |  ___/|  __|      | |/ _ \ / _ \| | '_ \ / _ \ \/ /".cyan());
+    println!("{}", r"  | |__| | |    | |____     | | (_) | (_) | | |_) | (_) >  <".cyan());
+    println!("{}", r"  |_____/|_|    |______|    |_|\___/ \___/|_|_.__/ \___/_/\_\".cyan());
     println!();
-    println!("{}", "          by Diogo Esteves                                    ".magenta());
+    println!("{}", "         by Diogo Esteves".magenta());
     println!();
 }
 
@@ -587,6 +587,9 @@ fn interactive_toptalkers() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Enable ANSI color support on Windows
+    set_virtual_terminal(true).ok();
+
     let cli = Cli::parse();
 
     // Handle shell completion generation (no banner)
