@@ -34,6 +34,7 @@ pub fn create_routes() -> Router<AppState> {
         .route("/api/summary", post(start_summary))
         .route("/api/conversations", post(start_conversations))
         .route("/api/conversations/export", post(start_conversations_export))
+        .route("/api/toptalkers", post(start_toptalkers))
         // htmx partials
         .route("/partials/download-form", get(download_form))
         .route("/partials/merge-form", get(merge_form))
@@ -42,6 +43,7 @@ pub fn create_routes() -> Router<AppState> {
         .route("/partials/tcpping-form", get(tcpping_form))
         .route("/partials/summary-form", get(summary_form))
         .route("/partials/conversations-form", get(conversations_form))
+        .route("/partials/toptalkers-form", get(toptalkers_form))
         .route("/partials/jobs", get(jobs_partial))
         .route("/partials/job/{id}", get(job_partial))
 }
@@ -345,6 +347,34 @@ async fn start_conversations_export(
 
     tokio::spawn(async move {
         run_conversations_job(state_clone, &job_id, &file, filter_ip_a.as_deref(), filter_ip_b.as_deref(), filter_port.as_deref(), Some(index), output.as_deref()).await;
+    });
+
+    Html(job_card_html(&job))
+}
+
+#[derive(Deserialize)]
+pub struct TopTalkersForm {
+    file: String,
+    limit: Option<String>,
+}
+
+async fn start_toptalkers(
+    State(state): State<AppState>,
+    Form(form): Form<TopTalkersForm>,
+) -> Html<String> {
+    let job = state.create_job("top-talkers");
+    let job_id = job.id.clone();
+
+    let state_clone = state.clone();
+    let file = form.file.clone();
+    let limit: usize = form.limit
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(50);
+
+    tokio::spawn(async move {
+        run_toptalkers_job(state_clone, &job_id, &file, limit).await;
     });
 
     Html(job_card_html(&job))
@@ -1563,18 +1593,20 @@ async fn run_conversations_job(state: AppState, job_id: &str, file: &str, filter
         };
         job.output.push(msg);
         job.output.push("─".repeat(40));
-        job.output.push(format!("{:<5} {:<8} {:<45} {:>8} {:>12} {:>10}",
-            "#", "Proto", "Conversation", "Packets", "Bytes", "Duration"));
-        job.output.push("─".repeat(90));
+        job.output.push(format!("{:<5} {:<8} {:<45} {:>8} {:>12} {:>10} {:>12}",
+            "#", "Proto", "Conversation", "Packets", "Bytes", "Duration", "Avg Speed"));
+        job.output.push("─".repeat(105));
 
         for (i, conv) in filtered.iter().enumerate() {
             let src = if conv.port_a.is_empty() { conv.addr_a.clone() } else { format!("{}:{}", conv.addr_a, conv.port_a) };
             let dst = if conv.port_b.is_empty() { conv.addr_b.clone() } else { format!("{}:{}", conv.addr_b, conv.port_b) };
             let label = format!("{} <-> {}", src, dst);
-            job.output.push(format!("{:<5} {:<8} {:<45} {:>8} {:>12} {:>10}s",
-                i + 1, conv.protocol, label, conv.packets_total, conv.bytes_total, conv.duration));
+            job.output.push(format!("{:<5} {:<8} {:<45} {:>8} {:>12} {:>10}s {:>12}",
+                i + 1, conv.protocol, label, conv.packets_total,
+                crate::commands::conversations::format_bytes(conv.bytes_total),
+                conv.duration, conv.avg_speed()));
         }
-        job.output.push("─".repeat(90));
+        job.output.push("─".repeat(105));
     });
 
     // Export if requested
@@ -1645,6 +1677,73 @@ async fn run_conversations_job(state: AppState, job_id: &str, file: &str, filter
     }
 }
 
+async fn run_toptalkers_job(state: AppState, job_id: &str, file: &str, limit: usize) {
+    use crate::commands::toptalkers;
+
+    state.update_job(job_id, |job| {
+        job.status = JobStatus::Running;
+        job.message = "Analyzing top talkers...".to_string();
+        job.output.push(format!("Analyzing: {}", file));
+        job.output.push(format!("Limit: top {}", limit));
+    });
+
+    let pcap_path = std::path::Path::new(file);
+    if !pcap_path.exists() {
+        state.update_job(job_id, |job| {
+            job.status = JobStatus::Failed;
+            job.message = format!("File not found: {}", file);
+        });
+        return;
+    }
+
+    let duration = toptalkers::get_capture_duration(pcap_path).unwrap_or(0.0);
+    if duration > 0.0 {
+        state.update_job(job_id, |job| {
+            job.output.push(format!("Capture duration: {:.2}s", duration));
+        });
+    }
+
+    match toptalkers::list_top_talkers(pcap_path, limit) {
+        Ok(talkers) => {
+            if talkers.is_empty() {
+                state.update_job(job_id, |job| {
+                    job.progress = 100;
+                    job.status = JobStatus::Completed;
+                    job.message = "No endpoints found".to_string();
+                });
+                return;
+            }
+
+            state.update_job(job_id, |job| {
+                job.progress = 100;
+                job.status = JobStatus::Completed;
+                job.message = format!("Top {} talker(s)", talkers.len());
+                job.output.push(format!("Found {} top talker(s)", talkers.len()));
+                job.output.push("─".repeat(40));
+                job.output.push(format!("{:<5} {:<20} {:>10} {:>12} {:>10} {:>12} {:>10} {:>12} {:>12}",
+                    "#", "Address", "Packets", "Bytes", "Tx Pkts", "Tx Bytes", "Rx Pkts", "Rx Bytes", "Avg Speed"));
+                job.output.push("─".repeat(110));
+
+                for (i, t) in talkers.iter().enumerate() {
+                    job.output.push(format!("{:<5} {:<20} {:>10} {:>12} {:>10} {:>12} {:>10} {:>12} {:>12}",
+                        i + 1, t.address, t.packets, t.bytes_display,
+                        t.tx_packets, t.tx_bytes_display,
+                        t.rx_packets, t.rx_bytes_display,
+                        toptalkers::talker_avg_speed(t.bytes_raw, duration)));
+                }
+                job.output.push("─".repeat(110));
+            });
+        }
+        Err(e) => {
+            state.update_job(job_id, |job| {
+                job.status = JobStatus::Failed;
+                job.message = format!("Analysis failed: {}", e);
+                job.output.push(format!("ERROR: {}", e));
+            });
+        }
+    }
+}
+
 // ============================================================================
 // HTML Partials
 // ============================================================================
@@ -1675,6 +1774,10 @@ async fn summary_form() -> Html<&'static str> {
 
 async fn conversations_form() -> Html<&'static str> {
     Html(CONVERSATIONS_FORM_HTML)
+}
+
+async fn toptalkers_form() -> Html<&'static str> {
+    Html(TOPTALKERS_FORM_HTML)
 }
 
 async fn jobs_partial(State(state): State<AppState>) -> Html<String> {
@@ -1910,6 +2013,10 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                                 class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
                             Conversations
                         </button>
+                        <button hx-get="/partials/toptalkers-form" hx-target="#form-container" hx-swap="innerHTML"
+                                class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
+                            Top Talkers
+                        </button>
                         <button hx-get="/partials/convert-form" hx-target="#form-container" hx-swap="innerHTML"
                                 class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-cyan-600 dark:hover:text-cyan-400">
                             ETL → PCAP
@@ -1963,6 +2070,11 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                              class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
                             <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">💬 Conversations</h4>
                             <p class="text-sm text-gray-600 dark:text-gray-400">List and export network flows from PCAPs</p>
+                        </div>
+                        <div hx-get="/partials/toptalkers-form" hx-target="#form-container" hx-swap="innerHTML"
+                             class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg text-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                            <h4 class="font-semibold text-cyan-600 dark:text-cyan-400">📈 Top Talkers</h4>
+                            <p class="text-sm text-gray-600 dark:text-gray-400">Show endpoints ranked by traffic volume</p>
                         </div>
                     </div>
                     
@@ -2315,6 +2427,34 @@ const CONVERSATIONS_FORM_HTML: &str = r##"<form hx-post="/api/conversations" hx-
         </div>
         <button type="submit" class="w-full bg-cyan-600 text-white py-2 px-4 rounded-md hover:bg-cyan-700 transition">
             Analyze Conversations
+        </button>
+    </div>
+</form>"##;
+
+const TOPTALKERS_FORM_HTML: &str = r##"<form hx-post="/api/toptalkers" hx-target="#jobs-list" hx-swap="afterbegin">
+    <h3 class="text-lg font-semibold mb-2 dark:text-white">PCAP Top Talkers</h3>
+    <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Uses <strong>tshark</strong> to list IP endpoints ranked by traffic volume, showing packet counts and byte totals per direction.</p>
+    <div class="space-y-4">
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">PCAP File</label>
+            <input type="text" name="file" required
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm"
+                placeholder="C:\path\to\capture.pcap">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Number of top talkers</label>
+            <input type="number" name="limit" value="50" min="1" max="10000"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-cyan-500 focus:border-cyan-500 dark:bg-gray-700 dark:text-white text-sm">
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Show the top N endpoints by total packet count</p>
+        </div>
+        <div class="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-md p-3 text-sm text-blue-800 dark:text-blue-300">
+            <strong>Output includes:</strong> total packets, total bytes, transmitted/received breakdown per endpoint.
+        </div>
+        <div class="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-md p-3 text-sm text-yellow-800 dark:text-yellow-300">
+            Requires Wireshark to be installed (provides tshark)
+        </div>
+        <button type="submit" class="w-full bg-cyan-600 text-white py-2 px-4 rounded-md hover:bg-cyan-700 transition">
+            Analyze Top Talkers
         </button>
     </div>
 </form>"##;

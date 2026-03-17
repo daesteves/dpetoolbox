@@ -170,6 +170,19 @@ Otherwise, all PCAP files are merged into a single merged.pcap.")]
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Show top talkers (endpoints by traffic) in a PCAP file (requires Wireshark)
+    #[command(after_help = "EXAMPLES:
+    dpetoolbox toptalkers -f capture.pcap
+    dpetoolbox toptalkers -f capture.pcap -n 20")]
+    Toptalkers {
+        /// PCAP file to analyze
+        #[arg(short, long)]
+        file: String,
+
+        /// Number of top talkers to show (default: 50)
+        #[arg(short = 'n', long, default_value = "50")]
+        limit: usize,
+    },
 }
 
 fn show_banner() {
@@ -193,6 +206,7 @@ const MENU_OPTIONS: &[&str] = &[
     "Convert ETL to PCAP",
     "PCAP Summary",
     "PCAP Conversations",
+    "PCAP Top Talkers",
     "TCP Ping",
     "Exit",
 ];
@@ -248,12 +262,18 @@ async fn interactive_mode() -> Result<()> {
                 }
             }
             6 => {
+                // PCAP Top Talkers
+                if let Err(e) = interactive_toptalkers() {
+                    println!("{} {}", "Error:".red().bold(), e);
+                }
+            }
+            7 => {
                 // TCP Ping
                 if let Err(e) = interactive_tcpping() {
                     println!("{} {}", "Error:".red().bold(), e);
                 }
             }
-            7 => {
+            8 => {
                 // Exit
                 println!("{}", "Goodbye!".cyan());
                 break;
@@ -544,6 +564,27 @@ fn interactive_conversations() -> Result<()> {
     Ok(())
 }
 
+/// Interactive top talkers prompts
+fn interactive_toptalkers() -> Result<()> {
+    let theme = ColorfulTheme::default();
+
+    let file: String = Input::with_theme(&theme)
+        .with_prompt("Path to PCAP file")
+        .interact_text()?;
+
+    if !std::path::Path::new(&file).exists() {
+        anyhow::bail!("File not found: {}", file);
+    }
+
+    let limit: usize = Input::with_theme(&theme)
+        .with_prompt("Number of top talkers to show")
+        .default(50)
+        .interact_text()?;
+
+    println!();
+    commands::toptalkers::run(&file, limit)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -622,6 +663,9 @@ async fn main() -> Result<()> {
             } else {
                 commands::conversations::run(&file)?;
             }
+        }
+        Some(Commands::Toptalkers { file, limit }) => {
+            commands::toptalkers::run(&file, limit)?;
         }
         None => {
             if cli.cli {

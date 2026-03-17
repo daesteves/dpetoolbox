@@ -5,6 +5,30 @@ use std::fmt;
 use std::path::Path;
 use std::process::Command;
 
+fn format_bps(bps: f64) -> String {
+    if bps >= 1_000_000_000.0 {
+        format!("{:.2} Gbps", bps / 1_000_000_000.0)
+    } else if bps >= 1_000_000.0 {
+        format!("{:.2} Mbps", bps / 1_000_000.0)
+    } else if bps >= 1_000.0 {
+        format!("{:.2} Kbps", bps / 1_000.0)
+    } else {
+        format!("{:.0} bps", bps)
+    }
+}
+
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.2} GB", bytes as f64 / 1_000_000_000.0)
+    } else if bytes >= 1_000_000 {
+        format!("{:.2} MB", bytes as f64 / 1_000_000.0)
+    } else if bytes >= 1_000 {
+        format!("{:.1} kB", bytes as f64 / 1_000.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 /// A parsed conversation entry
 #[derive(Clone)]
 pub struct Conversation {
@@ -75,6 +99,16 @@ impl Conversation {
         };
         format!("[{}] {} <-> {}", self.protocol, src, dst)
     }
+
+    /// Average speed as a formatted string (e.g., "1.23 Mbps")
+    pub fn avg_speed(&self) -> String {
+        let dur: f64 = self.duration.parse().unwrap_or(0.0);
+        if dur <= 0.0 || self.bytes_total == 0 {
+            return "N/A".to_string();
+        }
+        let bits_per_sec = (self.bytes_total as f64 * 8.0) / dur;
+        format_bps(bits_per_sec)
+    }
 }
 
 /// Parse tshark conversation statistics output
@@ -139,34 +173,51 @@ fn parse_conversation_line(line: &str, protocol: &str) -> Option<Conversation> {
     let (addr_a, port_a) = split_addr_port(left);
     let (addr_b, port_b) = split_addr_port(right);
 
-    // Extract numeric values from the remaining tokens, skipping unit strings
+    // Parse remaining tokens as groups of (frames, byte_value, unit)
+    // tshark outputs: frames bytes_val unit  frames bytes_val unit  frames bytes_val unit  rel_start  duration
     let remaining = &parts[arrow_idx + 2..];
-    let numbers: Vec<&str> = remaining
-        .iter()
-        .filter(|s| {
-            // Keep only tokens that look like numbers (digits, dots, commas)
-            s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',')
-        })
-        .copied()
-        .collect();
+    let mut idx = 0;
+    let mut frame_counts: Vec<u64> = Vec::new();
+    let mut byte_counts: Vec<u64> = Vec::new();
+    let mut trailing_numbers: Vec<String> = Vec::new();
 
-    // Expected numeric order: frames_a_b, bytes_a_b, frames_b_a, bytes_b_a, frames_total, bytes_total, rel_start, duration
-    let parse_num = |idx: usize| -> u64 {
-        numbers
-            .get(idx)
-            .and_then(|s| s.replace(',', ".").parse::<f64>().ok())
-            .map(|v| v as u64)
-            .unwrap_or(0)
-    };
+    while idx < remaining.len() {
+        let token = remaining[idx];
+        if let Ok(num) = token.replace(',', ".").parse::<f64>() {
+            // Check if this starts a frame+bytes+unit group
+            if idx + 2 < remaining.len() && is_byte_unit(remaining[idx + 2]) {
+                // frames, bytes_val, unit
+                frame_counts.push(num as u64);
+                let byte_val: f64 = remaining[idx + 1].replace(',', ".").parse().unwrap_or(0.0);
+                let unit = remaining[idx + 2];
+                byte_counts.push(convert_to_bytes(byte_val, unit));
+                idx += 3;
+            } else if idx + 1 < remaining.len() && is_byte_unit(remaining[idx + 1]) {
+                // bytes_val, unit (no preceding frame count parsed yet — this is a byte column)
+                let byte_val = num;
+                let unit = remaining[idx + 1];
+                byte_counts.push(convert_to_bytes(byte_val, unit));
+                idx += 2;
+            } else {
+                // standalone number (rel_start or duration)
+                trailing_numbers.push(token.replace(',', "."));
+                idx += 1;
+            }
+        } else if is_byte_unit(token) {
+            idx += 1;
+        } else {
+            idx += 1;
+        }
+    }
 
-    let packets_a_to_b = parse_num(0);
-    let bytes_a_to_b = parse_num(1);
-    let packets_b_to_a = parse_num(2);
-    let bytes_b_to_a = parse_num(3);
-    let packets_total = parse_num(4);
-    let bytes_total = parse_num(5);
-    // index 6 = rel_start
-    let duration = numbers.get(7).unwrap_or(&"0.0").replace(',', ".").to_string();
+    let packets_a_to_b = frame_counts.first().copied().unwrap_or(0);
+    let bytes_a_to_b = byte_counts.first().copied().unwrap_or(0);
+    let packets_b_to_a = frame_counts.get(1).copied().unwrap_or(0);
+    let bytes_b_to_a = byte_counts.get(1).copied().unwrap_or(0);
+    let packets_total = frame_counts.get(2).copied().unwrap_or(packets_a_to_b + packets_b_to_a);
+    let bytes_total = byte_counts.get(2).copied().unwrap_or(bytes_a_to_b + bytes_b_to_a);
+    // trailing_numbers: rel_start, duration
+    let duration = trailing_numbers.get(1).cloned().unwrap_or_else(|| "0.0".to_string());
 
     Some(Conversation {
         protocol: protocol.to_string(),
@@ -182,6 +233,21 @@ fn parse_conversation_line(line: &str, protocol: &str) -> Option<Conversation> {
         bytes_total,
         duration,
     })
+}
+
+fn is_byte_unit(s: &str) -> bool {
+    matches!(s, "bytes" | "kB" | "MB" | "GB" | "TB")
+}
+
+fn convert_to_bytes(value: f64, unit: &str) -> u64 {
+    let multiplier = match unit {
+        "kB" => 1_000.0,
+        "MB" => 1_000_000.0,
+        "GB" => 1_000_000_000.0,
+        "TB" => 1_000_000_000_000.0,
+        _ => 1.0, // "bytes"
+    };
+    (value * multiplier) as u64
 }
 
 fn split_addr_port(s: &str) -> (&str, &str) {
@@ -280,20 +346,21 @@ pub fn run(file_path: &str) -> Result<Vec<Conversation>> {
 
     // Print header
     println!(
-        "  {:<5} {:<45} {:>8} {:>12} {:>10}",
-        "#", "Conversation", "Packets", "Bytes", "Duration"
+        "  {:<5} {:<45} {:>8} {:>12} {:>10} {:>12}",
+        "#", "Conversation", "Packets", "Bytes", "Duration", "Avg Speed"
     );
-    println!("  {}", "-".repeat(85));
+    println!("  {}", "-".repeat(98));
 
     for (i, conv) in conversations.iter().enumerate() {
         let label = conv.label();
         println!(
-            "  {:<5} {:<45} {:>8} {:>12} {:>10}s",
+            "  {:<5} {:<45} {:>8} {:>12} {:>10}s {:>12}",
             i + 1,
             label,
             conv.packets_total,
-            conv.bytes_total,
-            conv.duration
+            format_bytes(conv.bytes_total),
+            conv.duration,
+            conv.avg_speed()
         );
     }
 

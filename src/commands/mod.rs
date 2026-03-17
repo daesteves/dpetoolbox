@@ -5,3 +5,4 @@ pub mod filter;
 pub mod merge;
 pub mod summary;
 pub mod tcpping;
+pub mod toptalkers;
