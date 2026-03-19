@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::sync::OnceLock;
 
-const CURRENT_VERSION: &str = "2.2.0-dev1";
+const CURRENT_VERSION: &str = "2.2.0";
 const GITHUB_RELEASES_URL: &str =
     "https://api.github.com/repos/daesteves/dpetoolbox/releases";
 
@@ -128,10 +128,10 @@ pub fn get_web_update_banner() -> String {
         Some(info) => {
             let label = if info.is_prerelease { "pre-release" } else { "stable release" };
             format!(
-                r##"<div class="bg-cyan-50 dark:bg-cyan-900/30 border border-cyan-300 dark:border-cyan-700 rounded-lg p-3 mb-4 text-sm text-cyan-800 dark:text-cyan-200 flex items-center justify-between">
+                r##"<div style="background:#ecfdf5; border:1px solid #6ee7b7; border-radius:8px; padding:12px 16px; margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; font-size:14px; color:#065f46;">
                     <span>New {label} available: <strong>{version}</strong> (current: {current})</span>
                     <a href="{url}" target="_blank" rel="noopener noreferrer"
-                       class="ml-3 px-3 py-1 bg-cyan-600 text-white rounded hover:bg-cyan-700 text-xs font-medium whitespace-nowrap">
+                       style="margin-left:12px; padding:6px 14px; background:#059669; color:#fff; border-radius:6px; text-decoration:none; font-size:12px; font-weight:500; white-space:nowrap;">
                         Download
                     </a>
                 </div>"##,
