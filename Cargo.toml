@@ -1,6 +1,6 @@
 [package]
 name = "dpetoolbox"
-version = "2.0.2"
+version = "2.2.0-dev1"
 edition = "2024"
 description = "DPE Network Analysis Toolbox - CLI and Web UI for network troubleshooting"
 authors = ["Diogo Esteves"]
@@ -14,7 +14,7 @@ tokio-stream = "0.1"
 anyhow = "1"
 colored = "2"
 indicatif = "0.17"
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.12", features = ["stream", "json"] }
 futures = "0.3"
 dirs = "5"
 zip = "2"

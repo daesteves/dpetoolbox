@@ -12,7 +12,7 @@ use std::io;
 #[derive(Parser)]
 #[command(name = "dpetoolbox")]
 #[command(author = "Diogo Esteves")]
-#[command(version = "2.0.2")]
+#[command(version = "2.2.0-dev1")]
 #[command(about = "DPE Network Analysis Toolbox", long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
@@ -628,6 +628,9 @@ async fn main() -> Result<()> {
 
     show_banner();
 
+    // Spawn background update check (non-blocking)
+    utils::update_check::spawn_update_check();
+
     match cli.command {
         Some(Commands::Download { file, clipboard, output, threads }) => {
             if clipboard {
@@ -710,6 +713,9 @@ async fn main() -> Result<()> {
             }
         }
     }
+
+    // Show update notification (if check completed by now)
+    utils::update_check::print_cli_update_notice();
 
     Ok(())
 }

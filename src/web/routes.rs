@@ -43,6 +43,7 @@ pub fn create_routes() -> Router<AppState> {
         .route("/api/subnet", post(start_subnet))
         .route("/api/pick-file", get(pick_file))
         .route("/api/pick-dir", get(pick_dir))
+        .route("/api/update-banner", get(update_banner))
         // htmx partials
         .route("/partials/download-form", get(download_form))
         .route("/partials/merge-form", get(merge_form))
@@ -108,6 +109,11 @@ async fn pick_dir(Query(q): Query<PickFileQuery>) -> Json<PickResult> {
         dialog.pick_folder().map(|p| p.to_string_lossy().to_string())
     }).await.unwrap_or(None);
     Json(PickResult { path: result })
+}
+
+/// Update notification banner (polled by htmx on page load)
+async fn update_banner() -> Html<String> {
+    Html(crate::utils::update_check::get_web_update_banner())
 }
 
 /// Main page
@@ -2111,6 +2117,9 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                 <p class="text-gray-600 dark:text-gray-400 text-sm sm:text-base">Network Analysis Toolbox</p>
             </a>
         </div>
+
+        <!-- Update notification banner (loads async) -->
+        <div id="update-banner" hx-get="/api/update-banner" hx-trigger="load delay:2s" hx-swap="innerHTML"></div>
 
         <!-- Navigation Tabs -->
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow mb-4 sm:mb-6">

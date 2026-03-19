@@ -1,7 +1,7 @@
 # DPE Toolbox
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.2-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.2.0--dev1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
 </p>
