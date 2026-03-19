@@ -117,8 +117,8 @@ async fn update_banner() -> Html<String> {
 }
 
 /// Main page
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn index() -> Html<String> {
+    Html(INDEX_HTML.replace("{VERSION}", crate::utils::update_check::current_version()))
 }
 
 /// List all jobs
@@ -2251,6 +2251,11 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
                 <p class="text-gray-500 dark:text-gray-400 text-center">Loading...</p>
             </div>
         </div>
+    </div>
+
+    <!-- Version footer -->
+    <div style="text-align:center; padding:8px 0 16px; font-size:11px; color:#9ca3af;">
+        DPE Toolbox v{VERSION}
     </div>
 </body>
 </html>"##;

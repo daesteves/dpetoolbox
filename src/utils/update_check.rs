@@ -5,6 +5,11 @@ const CURRENT_VERSION: &str = "2.2.0";
 const GITHUB_RELEASES_URL: &str =
     "https://api.github.com/repos/daesteves/dpetoolbox/releases";
 
+/// Get the current version string
+pub fn current_version() -> &'static str {
+    CURRENT_VERSION
+}
+
 #[derive(Deserialize)]
 struct GitHubRelease {
     tag_name: String,
@@ -64,7 +69,7 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
 async fn fetch_update() -> Option<UpdateInfo> {
     let client = reqwest::Client::builder()
         .user_agent("dpetoolbox-update-check")
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .ok()?;
 
@@ -79,16 +84,27 @@ async fn fetch_update() -> Option<UpdateInfo> {
 
     let current_is_prerelease = is_prerelease_version(CURRENT_VERSION);
 
-    // Find the latest applicable release
-    let candidate = if current_is_prerelease {
-        // Pre-release users: show any newer release (stable or pre-release)
-        releases.iter().find(|r| version_is_newer(&r.tag_name, CURRENT_VERSION))
-    } else {
-        // Stable users: only show newer stable releases
-        releases.iter().find(|r| !r.prerelease && version_is_newer(&r.tag_name, CURRENT_VERSION))
-    };
+    // Find the newest applicable release (iterate all, pick best)
+    let mut best: Option<&GitHubRelease> = None;
+    for r in &releases {
+        let dominated = if current_is_prerelease {
+            version_is_newer(&r.tag_name, CURRENT_VERSION)
+        } else {
+            !r.prerelease && version_is_newer(&r.tag_name, CURRENT_VERSION)
+        };
+        if dominated {
+            match best {
+                None => best = Some(r),
+                Some(prev) => {
+                    if version_is_newer(&r.tag_name, &prev.tag_name) {
+                        best = Some(r);
+                    }
+                }
+            }
+        }
+    }
 
-    candidate.map(|r| UpdateInfo {
+    best.map(|r| UpdateInfo {
         latest_version: r.tag_name.clone(),
         download_url: r.html_url.clone(),
         is_prerelease: r.prerelease,
